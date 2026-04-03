@@ -1,0 +1,78 @@
+# lil agents for Windows
+
+`lil agents` is a Windows desktop app that puts animated characters above the taskbar and opens a floating terminal-style AI chat when you click them.
+
+This repo is the Electron + React + Vite Windows port.
+
+## Features
+
+- animated `Bruce` and `Jazz` desktop agents
+- floating popover chat anchored to each agent
+- `Codex` CLI integration
+- tray icon and settings window
+- workspace picker and persisted app settings
+- themes, onboarding, thinking bubbles, and completion sounds
+- portable and NSIS packaging via `electron-builder`
+
+## Status
+
+This project is currently an early Windows beta.
+
+Working today:
+
+- floating agent windows on the main display
+- per-agent chat windows and buddy persona prompts
+- Windows-friendly converted Bruce/Jazz animation assets
+- basic Codex turn execution and transcript rendering
+- manual lift/spread calibration for placement above the taskbar
+
+Current limitations:
+
+- `Codex` is the only provider wired today
+- taskbar auto-hide and multi-monitor edge cases are not fully handled yet
+- signing and auto-update infrastructure are not configured yet
+- walking behavior is still being tuned against the converted Windows assets
+
+## Requirements
+
+- Windows 11 x64
+- Node.js 22+
+- npm 10+
+- Codex CLI installed and available on `PATH`
+
+## Getting started
+
+```bash
+npm install
+npm run dev
+```
+
+Notes:
+
+- the renderer uses Vite HMR
+- Electron main/preload changes currently require restarting `npm run dev`
+- the app will prompt for a workspace folder the first time you send a real prompt
+
+## Build
+
+```bash
+npm run build
+npm run dist:portable
+npm run dist:nsis
+```
+
+## Project structure
+
+- `electron/main.ts`: window management, tray, persistence, animation loop, Codex process handling
+- `electron/preload.ts`: safe renderer bridge
+- `src/App.tsx`: renderer UI for settings, agents, bubbles, and popovers
+- `src/lib/types.ts`: shared renderer/preload types
+- `public/agents/`: converted Windows animation assets
+
+## Contributing
+
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+
+## License
+
+MIT. See [`LICENSE`](./LICENSE).
