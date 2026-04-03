@@ -3,12 +3,12 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { AppConfig, AgentSnapshot, RendererSnapshot, TranscriptMessage, ThemeName } from '../src/lib/types'
+import type { AppConfig, AgentSnapshot, ProviderName, RendererSnapshot, TranscriptMessage, ThemeName } from '../src/lib/types'
 
 const isDev = !app.isPackaged
 const devServerUrl = 'http://127.0.0.1:5173'
 const availableThemes: ThemeName[] = ['Peach', 'Midnight', 'Cloud', 'Moss']
-const thinkingPhrases = ['thinking...', 'working on it', 'one sec...', 'checking files', 'running Codex']
+const thinkingPhrases = ['thinking...', 'working on it', 'one sec...', 'checking files', 'running tools']
 const completionPhrases = ['done!', 'all set!', 'ready', 'check it out']
 const agentSize = { width: 140, height: 160 }
 const popoverSize = { width: 480, height: 500 }
@@ -52,7 +52,7 @@ type RuntimeAgent = {
 
 type AppState = {
   config: AppConfig
-  codexPath: string | null
+  providerPaths: Record<ProviderName, string | null>
   tray: Tray | null
   completionPulseId: number
   settingsWindow: BrowserWindow | null
@@ -65,7 +65,10 @@ type AppState = {
 
 const state: AppState = {
   config: readConfig(),
-  codexPath: null,
+  providerPaths: {
+    codex: null,
+    claude: null,
+  },
   tray: null,
   completionPulseId: 0,
   settingsWindow: null,
@@ -106,7 +109,8 @@ app.on('second-instance', () => {
 })
 
 app.whenReady().then(async () => {
-  state.codexPath = await findCodexPath()
+  state.providerPaths.codex = await findCodexPath()
+  state.providerPaths.claude = await findClaudePath()
   createTray()
   createAgentWindows()
   createSettingsWindow()
@@ -140,8 +144,11 @@ ipcMain.handle('chat:send', async (_event, payload: { agentId: number; text: str
     return { ok: false, error: 'agent not found' }
   }
 
+  const provider = state.config.provider
+  const providerLabel = providerDisplayName(provider)
+
   if (agent.isBusy) {
-    return { ok: false, error: 'Codex is already working.' }
+    return { ok: false, error: `${providerLabel} is already working.` }
   }
 
   const workspacePath = await ensureWorkspacePath()
@@ -149,17 +156,21 @@ ipcMain.handle('chat:send', async (_event, payload: { agentId: number; text: str
     return { ok: false, error: 'workspace selection was cancelled' }
   }
 
-  if (!state.codexPath) {
-    state.codexPath = await findCodexPath()
-  }
+  const providerPath = await ensureProviderPath(provider)
 
-  if (!state.codexPath) {
-    pushMessage(agent, 'error', 'Codex CLI was not found on PATH. Install it first, then reopen the app.')
+  if (!providerPath) {
+    const errorMessage = `${providerLabel} CLI was not found on PATH. Install it first, then reopen the app.`
+    pushMessage(agent, 'error', errorMessage)
     broadcastState()
-    return { ok: false, error: 'Codex CLI was not found on PATH.' }
+    return { ok: false, error: errorMessage }
   }
 
-  await runCodexTurn(agent, payload.text, workspacePath)
+  if (provider === 'claude') {
+    await runClaudeTurn(agent, payload.text, workspacePath, providerPath)
+  } else {
+    await runCodexTurn(agent, payload.text, workspacePath, providerPath)
+  }
+
   return { ok: true, error: '' }
 })
 
@@ -240,14 +251,14 @@ ipcMain.handle('agent:drag-end', (_event, agentId: number) => {
   })
 })
 
-async function runCodexTurn(agent: RuntimeAgent, text: string, workspacePath: string) {
+async function runCodexTurn(agent: RuntimeAgent, text: string, workspacePath: string, codexPath: string) {
   agent.isBusy = true
   pushMessage(agent, 'user', text)
   setBubble(agent, randomItem(thinkingPhrases), 'thinking')
   broadcastState()
 
   const prompt = buildCodexPrompt(agent, agent.history.slice(0, -1), text)
-  const child = spawn(state.codexPath!, ['exec', '--json', '--full-auto', '--skip-git-repo-check', prompt], {
+  const child = spawn(codexPath, ['exec', '--json', '--full-auto', '--skip-git-repo-check', prompt], {
     cwd: workspacePath,
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -283,6 +294,71 @@ async function runCodexTurn(agent: RuntimeAgent, text: string, workspacePath: st
 
     if (!sawAssistantText) {
       pushMessage(agent, 'system', 'Codex finished without a readable assistant message in the JSON stream.')
+    }
+
+    const completionText = randomItem(completionPhrases)
+    setBubble(agent, completionText, 'completion', Date.now() + 3200)
+    state.completionPulseId += 1
+
+    if (state.config.soundsEnabled) {
+      shell.beep()
+    }
+
+    broadcastState()
+  })
+}
+
+async function runClaudeTurn(agent: RuntimeAgent, text: string, workspacePath: string, claudePath: string) {
+  agent.isBusy = true
+  pushMessage(agent, 'user', text)
+  setBubble(agent, randomItem(thinkingPhrases), 'thinking')
+  broadcastState()
+
+  const prompt = buildCodexPrompt(agent, agent.history.slice(0, -1), text)
+  const child = spawn(claudePath, ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'], {
+    cwd: workspacePath,
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  let stdoutBuffer = ''
+  const streamState = {
+    assistantText: '',
+    sawAssistantText: false,
+  }
+
+  child.stdout.on('data', (chunk) => {
+    stdoutBuffer += chunk.toString()
+
+    let newlineIndex = stdoutBuffer.indexOf('\n')
+    while (newlineIndex >= 0) {
+      const line = stdoutBuffer.slice(0, newlineIndex).trim()
+      stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1)
+      if (line) {
+        parseClaudeLine(agent, line, streamState)
+      }
+      newlineIndex = stdoutBuffer.indexOf('\n')
+    }
+  })
+
+  child.stderr.on('data', (chunk) => {
+    const textChunk = chunk.toString().trim()
+    if (textChunk) {
+      pushMessage(agent, 'error', textChunk)
+      broadcastState()
+    }
+  })
+
+  child.on('close', () => {
+    agent.isBusy = false
+
+    if (!streamState.sawAssistantText) {
+      const fallback = streamState.assistantText.trim()
+      if (fallback) {
+        pushMessage(agent, 'assistant', fallback)
+      } else {
+        pushMessage(agent, 'system', 'Claude finished without a readable assistant message in the JSON stream.')
+      }
     }
 
     const completionText = randomItem(completionPhrases)
@@ -353,6 +429,111 @@ function parseCodexLine(agent: RuntimeAgent, line: string) {
   }
 
   return false
+}
+
+function parseClaudeLine(
+  agent: RuntimeAgent,
+  line: string,
+  streamState: { assistantText: string; sawAssistantText: boolean },
+) {
+  let parsed: Record<string, unknown>
+  try {
+    parsed = JSON.parse(line) as Record<string, unknown>
+  } catch {
+    return
+  }
+
+  const type = typeof parsed.type === 'string' ? parsed.type : ''
+
+  if (type === 'assistant') {
+    const message = parsed.message as Record<string, unknown> | undefined
+    const content = Array.isArray(message?.content) ? message?.content as Record<string, unknown>[] : []
+    for (const block of content) {
+      const blockType = typeof block.type === 'string' ? block.type : ''
+      if (blockType === 'text') {
+        const text = typeof block.text === 'string' ? block.text : ''
+        if (text) {
+          streamState.assistantText += text
+        }
+      }
+
+      if (blockType === 'tool_use') {
+        const toolName = typeof block.name === 'string' ? block.name : 'Tool'
+        const input = (block.input && typeof block.input === 'object' ? block.input : {}) as Record<string, unknown>
+        pushMessage(agent, 'toolUse', `${toolName} ${formatClaudeToolSummary(toolName, input)}`.trim())
+        broadcastState()
+      }
+    }
+    return
+  }
+
+  if (type === 'user') {
+    const message = parsed.message as Record<string, unknown> | undefined
+    const content = Array.isArray(message?.content) ? message?.content as Record<string, unknown>[] : []
+    for (const block of content) {
+      if (block.type !== 'tool_result') {
+        continue
+      }
+
+      const toolResult = block.content
+      let summary = ''
+
+      if (typeof toolResult === 'string') {
+        summary = toolResult.trim()
+      } else if (Array.isArray(toolResult)) {
+        summary = toolResult
+          .map((item) => (item && typeof item === 'object' && typeof (item as Record<string, unknown>).text === 'string'
+            ? (item as Record<string, unknown>).text as string
+            : ''))
+          .filter(Boolean)
+          .join(' ')
+          .trim()
+      }
+
+      const isError = Boolean(block.is_error)
+      pushMessage(agent, 'toolResult', summary ? summary : isError ? 'Tool failed' : 'Tool finished')
+      broadcastState()
+    }
+    return
+  }
+
+  if (type === 'result') {
+    const result = typeof parsed.result === 'string' ? parsed.result.trim() : ''
+    const finalText = result || streamState.assistantText.trim()
+    if (finalText) {
+      pushMessage(agent, 'assistant', finalText)
+      streamState.sawAssistantText = true
+      streamState.assistantText = ''
+      broadcastState()
+    }
+    return
+  }
+
+  if (type === 'error') {
+    const message = typeof parsed.message === 'string' ? parsed.message : 'Claude turn failed'
+    pushMessage(agent, 'error', message)
+    broadcastState()
+  }
+}
+
+function formatClaudeToolSummary(toolName: string, input: Record<string, unknown>) {
+  switch (toolName) {
+    case 'Bash':
+      return typeof input.command === 'string' ? input.command : ''
+    case 'Read':
+    case 'Edit':
+    case 'Write':
+      return typeof input.file_path === 'string'
+        ? input.file_path
+        : typeof input.filePath === 'string'
+          ? input.filePath
+          : ''
+    case 'Glob':
+    case 'Grep':
+      return typeof input.pattern === 'string' ? input.pattern : ''
+    default:
+      return typeof input.description === 'string' ? input.description : ''
+  }
 }
 
 function buildCodexPrompt(agent: RuntimeAgent, history: TranscriptMessage[], latestUserMessage: string) {
@@ -682,9 +863,21 @@ function buildSnapshot(): RendererSnapshot {
     config: state.config,
     availableThemes,
     completionPulseId: state.completionPulseId,
-    codex: {
-      installed: Boolean(state.codexPath),
-      path: state.codexPath,
+    providers: {
+      codex: {
+        installed: Boolean(state.providerPaths.codex),
+        path: state.providerPaths.codex,
+        label: providerDisplayName('codex'),
+      },
+      claude: {
+        installed: Boolean(state.providerPaths.claude),
+        path: state.providerPaths.claude,
+        label: providerDisplayName('claude'),
+      },
+    },
+    activeProvider: {
+      name: state.config.provider,
+      label: providerDisplayName(state.config.provider),
     },
     agents: state.agents.map((agent): AgentSnapshot => ({
       id: agent.id,
@@ -840,7 +1033,7 @@ async function ensureWorkspacePath() {
 async function chooseWorkspacePath() {
   const owner = state.settingsWindow ?? BrowserWindow.getAllWindows()[0] ?? undefined
   const result = await dialog.showOpenDialog(owner, {
-    title: 'Choose your Codex workspace',
+    title: `Choose your ${providerDisplayName(state.config.provider)} workspace`,
     properties: ['openDirectory'],
   })
 
@@ -875,7 +1068,7 @@ function readConfig(): AppConfig {
     return {
       ...defaults,
       ...parsed,
-      provider: 'codex',
+      provider: parsed.provider === 'claude' ? 'claude' : 'codex',
       agentAnchors: parsed.agentAnchors ?? defaults.agentAnchors,
     }
   } catch {
@@ -889,8 +1082,16 @@ function writeConfig(config: AppConfig) {
 }
 
 async function findCodexPath() {
+  return findProviderPath('codex')
+}
+
+async function findClaudePath() {
+  return findProviderPath('claude')
+}
+
+async function findProviderPath(binaryName: string) {
   return new Promise<string | null>((resolve) => {
-    const child = spawn('where.exe', ['codex'])
+    const child = spawn('where.exe', [binaryName])
     let output = ''
 
     child.stdout.on('data', (chunk) => {
@@ -898,15 +1099,36 @@ async function findCodexPath() {
     })
 
     child.on('close', () => {
-      const path = output
+      const candidates = output
         .split(/\r?\n/)
         .map((line) => line.trim())
-        .find(Boolean)
-      resolve(path ?? null)
+        .filter(Boolean)
+
+      const preferred =
+        candidates.find((candidate) => candidate.toLowerCase().endsWith('.exe'))
+        ?? candidates.find((candidate) => candidate.toLowerCase().endsWith('.cmd'))
+        ?? candidates.find((candidate) => candidate.toLowerCase().endsWith('.bat'))
+        ?? candidates[0]
+
+      resolve(preferred ?? null)
     })
 
     child.on('error', () => resolve(null))
   })
+}
+
+async function ensureProviderPath(provider: ProviderName) {
+  if (state.providerPaths[provider]) {
+    return state.providerPaths[provider]
+  }
+
+  const resolved = provider === 'claude' ? await findClaudePath() : await findCodexPath()
+  state.providerPaths[provider] = resolved
+  return resolved
+}
+
+function providerDisplayName(provider: ProviderName) {
+  return provider === 'claude' ? 'Claude Code' : 'Codex'
 }
 
 function randomItem<T>(items: T[]) {

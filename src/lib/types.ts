@@ -1,5 +1,7 @@
 export type ThemeName = 'Peach' | 'Midnight' | 'Cloud' | 'Moss'
 
+export type ProviderName = 'codex' | 'claude'
+
 export type MessageRole = 'user' | 'assistant' | 'system' | 'error' | 'toolUse' | 'toolResult'
 
 export type WindowRoute =
@@ -38,7 +40,7 @@ export interface AgentAnchorMap {
 }
 
 export interface AppConfig {
-  provider: 'codex'
+  provider: ProviderName
   workspacePath: string | null
   theme: ThemeName
   onboardingComplete: boolean
@@ -52,9 +54,14 @@ export interface RendererSnapshot {
   config: AppConfig
   agents: AgentSnapshot[]
   availableThemes: ThemeName[]
-  codex: {
+  providers: Record<ProviderName, {
     installed: boolean
     path: string | null
+    label: string
+  }>
+  activeProvider: {
+    name: ProviderName
+    label: string
   }
   completionPulseId: number
 }

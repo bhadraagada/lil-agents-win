@@ -287,6 +287,7 @@ function PopoverWindow({
   const workspaceName = snapshot.config.workspacePath
     ? snapshot.config.workspacePath.split(/[\\/]/).pop() ?? 'workspace'
     : null
+  const providerLabel = snapshot.activeProvider.label
 
   return (
     <div className="chat-window">
@@ -324,7 +325,7 @@ function PopoverWindow({
       {/* Onboarding */}
       {!snapshot.config.onboardingComplete ? (
         <div className="chat-onboarding">
-          <p>Pick a workspace on first chat. Keep Codex installed. Click either agent anytime.</p>
+          <p>Pick a workspace on first chat. Keep {providerLabel} installed. Click either agent anytime.</p>
           <button type="button" onClick={() => void window.lilAgents.completeOnboarding()}>
             Got it
           </button>
@@ -455,6 +456,7 @@ function SettingsWindow({ snapshot }: { snapshot: RendererSnapshot }) {
   const workspaceDisplay = config.workspacePath
     ? config.workspacePath.split(/[\\/]/).slice(-2).join('/')
     : null
+  const providerEntries = Object.entries(snapshot.providers) as Array<[keyof typeof snapshot.providers, typeof snapshot.providers.codex]>
 
   return (
     <div className="settings-window">
@@ -507,11 +509,35 @@ function SettingsWindow({ snapshot }: { snapshot: RendererSnapshot }) {
         </header>
 
         <div className="settings-content">
+          <section className="settings-section">
+            <h3>Provider</h3>
+            <div className="provider-grid">
+              {providerEntries.map(([providerName, provider]) => (
+                <button
+                  key={providerName}
+                  type="button"
+                  className={`provider-option ${config.provider === providerName ? 'active' : ''}`}
+                  onClick={() => void updateConfig({ provider: providerName })}
+                >
+                  <div className="provider-option-header">
+                    <span className="provider-option-title">{provider.label}</span>
+                    <span className={`provider-pill ${provider.installed ? 'success' : 'error'}`}>
+                      {provider.installed ? 'Installed' : 'Missing'}
+                    </span>
+                  </div>
+                  <span className="provider-option-copy">
+                    {providerName === 'claude' ? 'Anthropic CLI workflow with tool streaming.' : 'OpenAI Codex CLI with JSON event output.'}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>
+
           {/* Status Cards */}
           <div className="status-cards">
-            <div className={`status-card ${snapshot.codex.installed ? 'success' : 'error'}`}>
+            <div className={`status-card ${snapshot.providers[config.provider].installed ? 'success' : 'error'}`}>
               <div className="status-icon">
-                {snapshot.codex.installed ? (
+                {snapshot.providers[config.provider].installed ? (
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <polyline points="20 6 9 17 4 12"/>
                   </svg>
@@ -523,8 +549,8 @@ function SettingsWindow({ snapshot }: { snapshot: RendererSnapshot }) {
                 )}
               </div>
               <div className="status-info">
-                <span className="status-label">Codex CLI</span>
-                <span className="status-value">{snapshot.codex.installed ? 'Installed' : 'Not Found'}</span>
+                <span className="status-label">Active provider</span>
+                <span className="status-value">{snapshot.activeProvider.label}</span>
               </div>
             </div>
 

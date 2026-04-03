@@ -1107,6 +1107,63 @@ input:focus {
   border-bottom: 0;
 }
 
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.provider-option {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 16px;
+  text-align: left;
+}
+
+.provider-option.active {
+  border-color: var(--accent-primary);
+}
+
+.provider-option-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.provider-option-title {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.provider-option-copy {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.provider-pill {
+  border: 2px solid var(--border-bold);
+  padding: 0.25rem 0.5rem;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.provider-pill.success {
+  color: var(--accent-success);
+  border-color: var(--accent-success);
+}
+
+.provider-pill.error {
+  color: var(--accent-error);
+  border-color: var(--accent-error);
+}
+
 /* === THEME GRID === */
 .theme-grid {
   display: grid;
@@ -1371,6 +1428,10 @@ input:focus {
   
   .theme-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .provider-grid {
+    grid-template-columns: 1fr;
   }
   
   .status-cards {
