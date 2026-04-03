@@ -814,7 +814,7 @@ function SettingsWindow({ snapshot }: { snapshot: RendererSnapshot }) {
           </div>
           <div className="settings-brand-text">
             <h1>lil agents</h1>
-            <span className="version-tag">v0.2.0 beta</span>
+            <span className="version-tag">v0.2.1 beta</span>
           </div>
         </div>
         

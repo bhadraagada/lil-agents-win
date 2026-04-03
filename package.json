@@ -1,7 +1,7 @@
 {
   "name": "lil-agents-win",
   "private": false,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Windows port of lil agents: animated desktop buddies with floating CLI chat.",
   "license": "MIT",
   "type": "module",
@@ -55,6 +55,7 @@
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
+      "public/icons.ico",
       "package.json",
       "LICENSE"
     ],
@@ -62,6 +63,7 @@
       "output": "release"
     },
     "win": {
+      "icon": "public/icons.ico",
       "target": [
         "portable",
         "nsis"

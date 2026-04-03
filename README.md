@@ -1,87 +1,113 @@
 # lil agents for Windows
 
-`lil agents` is a Windows desktop app that puts animated characters above the taskbar and opens a floating terminal-style AI chat when you click them.
+Animated desktop coding buddies for Windows.
 
-![alt text](image.png)
+`lil agents` puts Bruce and Jazz above your taskbar, gives each one a floating AI chat popover, and lets you work with local coding CLIs without living in a terminal full-time.
 
-This repo is the Electron + React + Vite Windows port.
+This repo is the Windows port of the original macOS app, built with Electron, React, and Vite.
 
-## Features
+## Why it exists
+
+Most AI coding tools live in a browser tab or terminal pane. `lil agents` turns them into small desktop companions instead:
+
+- animated characters that stay on your desktop
+- quick popover chat instead of a full IDE panel
+- per-agent provider selection and workspace-aware prompts
+- lightweight settings for placement, theme, size, visibility, and model control
+
+## What ships today
 
 - animated `Bruce` and `Jazz` desktop agents
 - floating popover chat anchored to each agent
 - provider support for `Claude Code`, `Codex`, `Copilot`, `Gemini`, and `OpenCode`
-- tray icon and settings window
-- workspace picker and persisted app settings
-- themes, onboarding, thinking bubbles, and completion sounds
-- per-provider global model settings with advanced fields
-- portable and NSIS packaging via `electron-builder`
-
-## Status
-
-This project is currently an early Windows beta.
-
-Working today:
-
-- floating agent windows on the main display
-- per-agent chat windows and buddy persona prompts
-- Windows-friendly converted Bruce/Jazz animation assets
-- per-agent provider selection, size controls, and visibility toggles
-- provider selection for Claude Code, Codex, Copilot, Gemini, and OpenCode
-- transcript rendering with user, assistant, tool-use, tool-result, and error messages
-- markdown rendering with inline code, code blocks, bullets, and links
-- manual lift/spread calibration for placement above the taskbar
+- per-agent provider switching
+- per-agent size controls: `large`, `medium`, `small`
+- per-agent visibility toggles from settings and tray
 - display pinning and per-agent dragging
-- tray update checking and custom completion chimes
-- persisted per-provider model text fields that fall back to each CLI default when left blank
+- tray icon, settings window, and update checking
+- workspace picker with persisted app settings
+- markdown rendering for chat replies
+- custom completion chimes
+- portable and NSIS Windows builds via `electron-builder`
 
-Current limitations:
+## Current status
 
-- taskbar auto-hide and multi-monitor edge cases are not fully handled yet
-- signing and auto-update infrastructure are not configured yet
-- walking behavior is still being tuned against the converted Windows assets
+This project is usable today and significantly closer to the original macOS experience than the first Windows beta.
 
-## Future Plans
+Still in progress:
 
-- better taskbar auto-hide and multi-monitor visibility behavior
-- full in-app auto-update flow instead of release-page handoff
-- more iteration on walking behavior against the converted Windows assets
+- taskbar auto-hide and multi-monitor behavior need more polish
+- full in-app auto-update is not implemented yet
+- walking behavior is still being tuned against the Windows animation assets
 
 ## Requirements
 
 - Windows 11 x64
+- Bun
 - Node.js 22+
-- npm 10+
 - at least one supported CLI installed and available on `PATH`
 
-## Getting started
+## Supported providers
+
+- `Claude Code`
+- `Codex`
+- `Copilot`
+- `Gemini`
+- `OpenCode`
+
+You can also set one global default model per provider from the advanced settings section. Leave a model field blank to use that provider CLI's own default.
+
+## Development
+
+Install dependencies:
 
 ```bash
-npm install
-npm run dev
+bun install
+```
+
+Run the desktop app with the Vite dev server:
+
+```bash
+bun dev
 ```
 
 Notes:
 
-- the renderer uses Vite HMR
-- Electron main/preload changes currently require restarting `npm run dev`
-- the app will prompt for a workspace folder the first time you send a real prompt
+- renderer changes hot reload through Vite
+- Electron main/preload changes still require a restart of `bun dev`
+- the first real prompt will ask you to choose a workspace
 
-## Build
+## Run a built app locally
 
 ```bash
-npm run build
-npm run dist:portable
-npm run dist:nsis
+bun start
 ```
+
+`bun start` rebuilds first, then launches the local production-style app.
+
+## Build releases
+
+```bash
+bun run dist:portable
+bun run dist:nsis
+```
+
+Artifacts are written to `release/`.
 
 ## Project structure
 
-- `electron/main.ts`: window management, tray, persistence, animation loop, and provider process handling
+- `electron/main.ts`: tray, windows, persistence, animation loop, provider process handling
 - `electron/preload.ts`: safe renderer bridge
-- `src/App.tsx`: renderer UI for settings, agents, bubbles, and popovers
+- `src/App.tsx`: renderer UI for agents, popovers, bubbles, and settings
 - `src/lib/types.ts`: shared renderer/preload types
-- `public/agents/`: converted Windows animation assets
+- `public/agents/`: converted Bruce and Jazz animation assets
+- `public/icons.ico`: Windows app, tray, and installer icon
+
+## Roadmap
+
+- improve taskbar auto-hide and multi-monitor behavior
+- add a full in-app updater flow instead of release-page handoff
+- keep refining movement, hit testing, and desktop feel
 
 ## Contributing
 

@@ -17,6 +17,37 @@ const fullSpeedStartMs = 3750
 const decelStartMs = 7500
 const walkStopMs = 8250
 
+function runtimeIconPath() {
+  return path.join(app.getAppPath(), 'public', 'icons.ico')
+}
+
+function appIcon() {
+  const iconPath = runtimeIconPath()
+  if (existsSync(iconPath)) {
+    return nativeImage.createFromPath(iconPath)
+  }
+
+  return nativeImage.createFromDataURL(`data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
+    <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+      <defs>
+        <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" style="stop-color:#2a2f3d"/>
+          <stop offset="100%" style="stop-color:#1a1d26"/>
+        </linearGradient>
+      </defs>
+      <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+      <circle cx="22" cy="30" r="14" fill="#3ecf8e"/>
+      <circle cx="17" cy="27" r="3" fill="#1a1d26"/>
+      <circle cx="27" cy="27" r="3" fill="#1a1d26"/>
+      <ellipse cx="22" cy="35" rx="5" ry="3" fill="#1a1d26" opacity="0.6"/>
+      <circle cx="42" cy="38" r="14" fill="#ff8b3d"/>
+      <circle cx="37" cy="35" r="3" fill="#1a1d26"/>
+      <circle cx="47" cy="35" r="3" fill="#1a1d26"/>
+      <ellipse cx="42" cy="43" rx="5" ry="3" fill="#1a1d26" opacity="0.6"/>
+    </svg>
+  `)}`)
+}
+
 function defaultProviderModels(): Record<ProviderName, string> {
   return {
     claude: '',
@@ -1268,6 +1299,7 @@ function createAgentWindows() {
       ...size,
       x: Math.round(agent.x),
       y: Math.round(agent.y),
+      icon: runtimeIconPath(),
       frame: false,
       transparent: true,
       resizable: false,
@@ -1289,6 +1321,7 @@ function createAgentWindows() {
     const popoverWindow = new BrowserWindow({
       ...popoverSize,
       show: false,
+      icon: runtimeIconPath(),
       frame: false,
       transparent: true,
       resizable: false,
@@ -1306,6 +1339,7 @@ function createAgentWindows() {
       width: 120,
       height: 34,
       show: false,
+      icon: runtimeIconPath(),
       frame: false,
       transparent: true,
       resizable: false,
@@ -1334,6 +1368,7 @@ function createSettingsWindow() {
     backgroundColor: '#111111',
     show: false,
     title: 'lil agents',
+    icon: runtimeIconPath(),
     webPreferences: windowWebPreferences(),
   })
   loadWindow(state.settingsWindow, 'settings')
@@ -1346,29 +1381,7 @@ function createSettingsWindow() {
 }
 
 function createTray() {
-  // Tray icon: Two cute overlapping agent faces (Bruce=green, Jazz=orange)
-  const icon = nativeImage.createFromDataURL(`data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
-    <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-      <defs>
-        <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" style="stop-color:#2a2f3d"/>
-          <stop offset="100%" style="stop-color:#1a1d26"/>
-        </linearGradient>
-      </defs>
-      <!-- Background -->
-      <rect width="64" height="64" rx="14" fill="url(#bg)"/>
-      <!-- Bruce (green agent - back) -->
-      <circle cx="22" cy="30" r="14" fill="#3ecf8e"/>
-      <circle cx="17" cy="27" r="3" fill="#1a1d26"/>
-      <circle cx="27" cy="27" r="3" fill="#1a1d26"/>
-      <ellipse cx="22" cy="35" rx="5" ry="3" fill="#1a1d26" opacity="0.6"/>
-      <!-- Jazz (orange agent - front) -->
-      <circle cx="42" cy="38" r="14" fill="#ff8b3d"/>
-      <circle cx="37" cy="35" r="3" fill="#1a1d26"/>
-      <circle cx="47" cy="35" r="3" fill="#1a1d26"/>
-      <ellipse cx="42" cy="43" rx="5" ry="3" fill="#1a1d26" opacity="0.6"/>
-    </svg>
-  `)}`)
+  const icon = appIcon().resize({ width: 16, height: 16 })
   state.tray = new Tray(icon)
   state.tray.setToolTip('lil agents')
   updateTrayMenu()
