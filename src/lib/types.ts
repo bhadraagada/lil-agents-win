@@ -1,6 +1,6 @@
 export type ThemeName = 'Peach' | 'Midnight' | 'Cloud' | 'Moss'
 
-export type ProviderName = 'codex' | 'claude'
+export type ProviderName = 'claude' | 'codex' | 'copilot' | 'gemini' | 'opencode'
 
 export type MessageRole = 'user' | 'assistant' | 'system' | 'error' | 'toolUse' | 'toolResult'
 

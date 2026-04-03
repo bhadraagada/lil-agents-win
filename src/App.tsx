@@ -457,6 +457,13 @@ function SettingsWindow({ snapshot }: { snapshot: RendererSnapshot }) {
     ? config.workspacePath.split(/[\\/]/).slice(-2).join('/')
     : null
   const providerEntries = Object.entries(snapshot.providers) as Array<[keyof typeof snapshot.providers, typeof snapshot.providers.codex]>
+  const providerDescriptions: Record<keyof typeof snapshot.providers, string> = {
+    claude: 'Anthropic CLI workflow with tool streaming.',
+    codex: 'OpenAI Codex CLI with JSON event output.',
+    copilot: 'GitHub Copilot CLI for coding tasks and shell actions.',
+    gemini: 'Google Gemini CLI with yolo-style agent mode.',
+    opencode: 'OpenCode CLI with JSON-formatted run events.',
+  }
 
   return (
     <div className="settings-window">
@@ -526,7 +533,7 @@ function SettingsWindow({ snapshot }: { snapshot: RendererSnapshot }) {
                     </span>
                   </div>
                   <span className="provider-option-copy">
-                    {providerName === 'claude' ? 'Anthropic CLI workflow with tool streaming.' : 'OpenAI Codex CLI with JSON event output.'}
+                    {providerDescriptions[providerName]}
                   </span>
                 </button>
               ))}

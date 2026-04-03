@@ -8,6 +8,7 @@ import type { AppConfig, AgentSnapshot, ProviderName, RendererSnapshot, Transcri
 const isDev = !app.isPackaged
 const devServerUrl = 'http://127.0.0.1:5173'
 const availableThemes: ThemeName[] = ['Peach', 'Midnight', 'Cloud', 'Moss']
+const availableProviders: ProviderName[] = ['claude', 'codex', 'copilot', 'gemini', 'opencode']
 const thinkingPhrases = ['thinking...', 'working on it', 'one sec...', 'checking files', 'running tools']
 const completionPhrases = ['done!', 'all set!', 'ready', 'check it out']
 const agentSize = { width: 140, height: 160 }
@@ -66,8 +67,11 @@ type AppState = {
 const state: AppState = {
   config: readConfig(),
   providerPaths: {
-    codex: null,
     claude: null,
+    codex: null,
+    copilot: null,
+    gemini: null,
+    opencode: null,
   },
   tray: null,
   completionPulseId: 0,
@@ -109,8 +113,10 @@ app.on('second-instance', () => {
 })
 
 app.whenReady().then(async () => {
-  state.providerPaths.codex = await findCodexPath()
-  state.providerPaths.claude = await findClaudePath()
+  const resolvedPaths = await Promise.all(availableProviders.map((provider) => ensureProviderPath(provider)))
+  for (const [index, provider] of availableProviders.entries()) {
+    state.providerPaths[provider] = resolvedPaths[index]
+  }
   createTray()
   createAgentWindows()
   createSettingsWindow()
@@ -165,10 +171,23 @@ ipcMain.handle('chat:send', async (_event, payload: { agentId: number; text: str
     return { ok: false, error: errorMessage }
   }
 
-  if (provider === 'claude') {
-    await runClaudeTurn(agent, payload.text, workspacePath, providerPath)
-  } else {
-    await runCodexTurn(agent, payload.text, workspacePath, providerPath)
+  switch (provider) {
+    case 'claude':
+      await runClaudeTurn(agent, payload.text, workspacePath, providerPath)
+      break
+    case 'copilot':
+      await runCopilotTurn(agent, payload.text, workspacePath, providerPath)
+      break
+    case 'gemini':
+      await runGeminiTurn(agent, payload.text, workspacePath, providerPath)
+      break
+    case 'opencode':
+      await runOpenCodeTurn(agent, payload.text, workspacePath, providerPath)
+      break
+    case 'codex':
+    default:
+      await runCodexTurn(agent, payload.text, workspacePath, providerPath)
+      break
   }
 
   return { ok: true, error: '' }
@@ -373,6 +392,230 @@ async function runClaudeTurn(agent: RuntimeAgent, text: string, workspacePath: s
   })
 }
 
+async function runCopilotTurn(agent: RuntimeAgent, text: string, workspacePath: string, copilotPath: string) {
+  agent.isBusy = true
+  pushMessage(agent, 'user', text)
+  setBubble(agent, randomItem(thinkingPhrases), 'thinking')
+  broadcastState()
+
+  const prompt = buildCodexPrompt(agent, agent.history.slice(0, -1), text)
+  const child = spawn(copilotPath, ['-p', prompt, '--output-format', 'json', '--allow-all'], {
+    cwd: workspacePath,
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  let stdoutBuffer = ''
+  let plainText = ''
+  const streamState = {
+    assistantText: '',
+    sawAssistantText: false,
+    useJson: true,
+  }
+
+  child.stdout.on('data', (chunk) => {
+    const textChunk = chunk.toString()
+
+    if (!streamState.useJson) {
+      plainText += textChunk
+      return
+    }
+
+    stdoutBuffer += textChunk
+    let newlineIndex = stdoutBuffer.indexOf('\n')
+    while (newlineIndex >= 0) {
+      const line = stdoutBuffer.slice(0, newlineIndex).trim()
+      stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1)
+      if (line && !parseCopilotLine(agent, line, streamState)) {
+        streamState.useJson = false
+        plainText += `${line}\n${stdoutBuffer}`
+        stdoutBuffer = ''
+        break
+      }
+      newlineIndex = stdoutBuffer.indexOf('\n')
+    }
+  })
+
+  child.stderr.on('data', (chunk) => {
+    const textChunk = chunk.toString().trim()
+    if (textChunk) {
+      pushMessage(agent, 'error', textChunk)
+      broadcastState()
+    }
+  })
+
+  child.on('close', () => {
+    agent.isBusy = false
+
+    if (streamState.useJson && stdoutBuffer.trim()) {
+      parseCopilotLine(agent, stdoutBuffer.trim(), streamState)
+    }
+
+    if (!streamState.sawAssistantText) {
+      const fallback = streamState.assistantText.trim() || plainText.trim()
+      if (fallback) {
+        pushMessage(agent, 'assistant', fallback)
+      } else {
+        pushMessage(agent, 'system', 'Copilot finished without a readable assistant message.')
+      }
+    }
+
+    const completionText = randomItem(completionPhrases)
+    setBubble(agent, completionText, 'completion', Date.now() + 3200)
+    state.completionPulseId += 1
+
+    if (state.config.soundsEnabled) {
+      shell.beep()
+    }
+
+    broadcastState()
+  })
+}
+
+async function runGeminiTurn(agent: RuntimeAgent, text: string, workspacePath: string, geminiPath: string) {
+  agent.isBusy = true
+  pushMessage(agent, 'user', text)
+  setBubble(agent, randomItem(thinkingPhrases), 'thinking')
+  broadcastState()
+
+  const prompt = buildCodexPrompt(agent, agent.history.slice(0, -1), text)
+  const child = spawn(geminiPath, ['--yolo', '-p', prompt], {
+    cwd: workspacePath,
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  let stdoutBuffer = ''
+  let plainText = ''
+  const streamState = {
+    assistantText: '',
+    sawAssistantText: false,
+  }
+
+  child.stdout.on('data', (chunk) => {
+    stdoutBuffer += chunk.toString()
+
+    let newlineIndex = stdoutBuffer.indexOf('\n')
+    while (newlineIndex >= 0) {
+      const line = stdoutBuffer.slice(0, newlineIndex).trim()
+      stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1)
+      if (line) {
+        if (!parseGeminiLine(agent, line, streamState)) {
+          plainText += `${line}\n`
+        }
+      }
+      newlineIndex = stdoutBuffer.indexOf('\n')
+    }
+  })
+
+  child.stderr.on('data', (chunk) => {
+    const textChunk = chunk.toString()
+    if (!isGeminiNoise(textChunk)) {
+      const trimmed = textChunk.trim()
+      if (trimmed) {
+        pushMessage(agent, 'error', trimmed)
+        broadcastState()
+      }
+    }
+  })
+
+  child.on('close', () => {
+    agent.isBusy = false
+
+    if (stdoutBuffer.trim() && !parseGeminiLine(agent, stdoutBuffer.trim(), streamState)) {
+      plainText += stdoutBuffer.trim()
+    }
+
+    if (!streamState.sawAssistantText) {
+      const fallback = streamState.assistantText.trim() || plainText.trim()
+      if (fallback) {
+        pushMessage(agent, 'assistant', fallback)
+      } else {
+        pushMessage(agent, 'system', 'Gemini finished without a readable assistant message.')
+      }
+    }
+
+    const completionText = randomItem(completionPhrases)
+    setBubble(agent, completionText, 'completion', Date.now() + 3200)
+    state.completionPulseId += 1
+
+    if (state.config.soundsEnabled) {
+      shell.beep()
+    }
+
+    broadcastState()
+  })
+}
+
+async function runOpenCodeTurn(agent: RuntimeAgent, text: string, workspacePath: string, openCodePath: string) {
+  agent.isBusy = true
+  pushMessage(agent, 'user', text)
+  setBubble(agent, randomItem(thinkingPhrases), 'thinking')
+  broadcastState()
+
+  const prompt = buildCodexPrompt(agent, agent.history.slice(0, -1), text)
+  const child = spawn(openCodePath, ['run', prompt, '--format', 'json'], {
+    cwd: workspacePath,
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  let stdoutBuffer = ''
+  const streamState = {
+    assistantText: '',
+    sawAssistantText: false,
+  }
+
+  child.stdout.on('data', (chunk) => {
+    stdoutBuffer += chunk.toString()
+
+    let newlineIndex = stdoutBuffer.indexOf('\n')
+    while (newlineIndex >= 0) {
+      const line = stdoutBuffer.slice(0, newlineIndex).trim()
+      stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1)
+      if (line) {
+        parseOpenCodeLine(agent, line, streamState)
+      }
+      newlineIndex = stdoutBuffer.indexOf('\n')
+    }
+  })
+
+  child.stderr.on('data', (chunk) => {
+    const textChunk = chunk.toString().trim()
+    if (textChunk) {
+      pushMessage(agent, 'error', textChunk)
+      broadcastState()
+    }
+  })
+
+  child.on('close', () => {
+    agent.isBusy = false
+
+    if (stdoutBuffer.trim()) {
+      parseOpenCodeLine(agent, stdoutBuffer.trim(), streamState)
+    }
+
+    if (!streamState.sawAssistantText) {
+      const fallback = streamState.assistantText.trim()
+      if (fallback) {
+        pushMessage(agent, 'assistant', fallback)
+      } else {
+        pushMessage(agent, 'system', 'OpenCode finished without a readable assistant message.')
+      }
+    }
+
+    const completionText = randomItem(completionPhrases)
+    setBubble(agent, completionText, 'completion', Date.now() + 3200)
+    state.completionPulseId += 1
+
+    if (state.config.soundsEnabled) {
+      shell.beep()
+    }
+
+    broadcastState()
+  })
+}
+
 function parseCodexLine(agent: RuntimeAgent, line: string) {
   let parsed: Record<string, unknown>
   try {
@@ -533,6 +776,260 @@ function formatClaudeToolSummary(toolName: string, input: Record<string, unknown
       return typeof input.pattern === 'string' ? input.pattern : ''
     default:
       return typeof input.description === 'string' ? input.description : ''
+  }
+}
+
+function parseCopilotLine(
+  agent: RuntimeAgent,
+  line: string,
+  streamState: { assistantText: string; sawAssistantText: boolean; useJson: boolean },
+) {
+  let parsed: Record<string, unknown>
+  try {
+    parsed = JSON.parse(line) as Record<string, unknown>
+  } catch {
+    return false
+  }
+
+  if (parsed.ephemeral === true) {
+    const type = typeof parsed.type === 'string' ? parsed.type : ''
+    const data = (parsed.data && typeof parsed.data === 'object' ? parsed.data : {}) as Record<string, unknown>
+    if (type === 'assistant.message_delta' && typeof data.deltaContent === 'string') {
+      streamState.assistantText += data.deltaContent
+    }
+    return true
+  }
+
+  const type = typeof parsed.type === 'string' ? parsed.type : ''
+  const data = (parsed.data && typeof parsed.data === 'object' ? parsed.data : {}) as Record<string, unknown>
+
+  switch (type) {
+    case 'assistant.message': {
+      const content = typeof data.content === 'string' ? data.content : ''
+      if (content) {
+        streamState.assistantText = content
+      }
+      return true
+    }
+    case 'assistant.turn_end':
+    case 'result': {
+      const finalText = streamState.assistantText.trim()
+      if (finalText) {
+        pushMessage(agent, 'assistant', finalText)
+        streamState.assistantText = ''
+        streamState.sawAssistantText = true
+        broadcastState()
+      }
+      return true
+    }
+    case 'assistant.tool_call': {
+      const toolName = typeof data.name === 'string' ? data.name : typeof data.tool === 'string' ? data.tool : 'Tool'
+      const input = ((data.input && typeof data.input === 'object' ? data.input : data.arguments) ?? {}) as Record<string, unknown>
+      const command = typeof input.command === 'string' ? input.command : ''
+      const displayName = command ? 'Bash' : toolName
+      const summary = command || toolName
+      pushMessage(agent, 'toolUse', `${displayName} ${summary}`.trim())
+      broadcastState()
+      return true
+    }
+    case 'assistant.tool_result': {
+      const output = typeof data.output === 'string' ? data.output : typeof data.result === 'string' ? data.result : ''
+      const isError = Boolean(data.is_error) || data.status === 'error'
+      pushMessage(agent, 'toolResult', output ? String(output.slice(0, 80)) : isError ? 'Tool failed' : 'Tool finished')
+      broadcastState()
+      return true
+    }
+    case 'error': {
+      const message = typeof data.message === 'string' ? data.message : typeof data.error === 'string' ? data.error : 'Copilot turn failed'
+      pushMessage(agent, 'error', message)
+      broadcastState()
+      return true
+    }
+    default:
+      return true
+  }
+}
+
+function parseGeminiLine(
+  agent: RuntimeAgent,
+  line: string,
+  streamState: { assistantText: string; sawAssistantText: boolean },
+) {
+  let parsed: Record<string, unknown>
+  try {
+    parsed = JSON.parse(line) as Record<string, unknown>
+  } catch {
+    return false
+  }
+
+  const type = typeof parsed.type === 'string' ? parsed.type : typeof parsed.event === 'string' ? parsed.event : ''
+  const data = (parsed.data && typeof parsed.data === 'object' ? parsed.data : parsed) as Record<string, unknown>
+
+  switch (type) {
+    case 'content':
+    case 'text':
+    case 'delta':
+    case 'message': {
+      const text = typeof data.text === 'string'
+        ? data.text
+        : typeof data.content === 'string'
+          ? data.content
+          : typeof parsed.text === 'string'
+            ? parsed.text
+            : ''
+      if (text) {
+        const isDelta = Boolean(parsed.delta)
+        streamState.assistantText = isDelta ? `${streamState.assistantText}${text}` : text
+      }
+      return true
+    }
+    case 'tool_call':
+    case 'function_call':
+    case 'tool_use': {
+      const toolName = typeof data.name === 'string' ? data.name : typeof parsed.tool_name === 'string' ? parsed.tool_name : 'Tool'
+      if (toolName === 'activate_skill') {
+        return true
+      }
+      const input = ((data.input && typeof data.input === 'object' ? data.input : data.arguments) ?? parsed.parameters ?? {}) as Record<string, unknown>
+      pushMessage(agent, 'toolUse', `${toolName} ${formatGeminiToolSummary(toolName, input)}`.trim())
+      broadcastState()
+      return true
+    }
+    case 'tool_result':
+    case 'function_result': {
+      const output = typeof data.output === 'string'
+        ? data.output
+        : typeof data.result === 'string'
+          ? data.result
+          : typeof parsed.output === 'string'
+            ? parsed.output
+            : ''
+      const isError = Boolean(data.is_error) || parsed.status === 'error'
+      pushMessage(agent, 'toolResult', output ? String(output.slice(0, 80)) : isError ? 'Tool failed' : 'Tool finished')
+      broadcastState()
+      return true
+    }
+    case 'done':
+    case 'end':
+    case 'complete':
+    case 'turn_end':
+    case 'result': {
+      const result = typeof parsed.result === 'string' ? parsed.result : typeof data.text === 'string' ? data.text : ''
+      const finalText = (result || streamState.assistantText).trim()
+      if (finalText) {
+        pushMessage(agent, 'assistant', finalText)
+        streamState.assistantText = ''
+        streamState.sawAssistantText = true
+        broadcastState()
+      }
+      return true
+    }
+    case 'error': {
+      const message = typeof data.message === 'string' ? data.message : typeof data.error === 'string' ? data.error : 'Gemini turn failed'
+      pushMessage(agent, 'error', message)
+      broadcastState()
+      return true
+    }
+    default: {
+      const text = typeof parsed.text === 'string' ? parsed.text : typeof parsed.content === 'string' ? parsed.content : ''
+      if (text) {
+        streamState.assistantText += text
+      }
+      return true
+    }
+  }
+}
+
+function formatGeminiToolSummary(toolName: string, input: Record<string, unknown>) {
+  switch (toolName) {
+    case 'run_shell_command':
+      return typeof input.command === 'string' ? input.command : ''
+    case 'read_file':
+    case 'replace':
+    case 'write_file':
+      return typeof input.file_path === 'string' ? input.file_path : ''
+    case 'glob':
+    case 'grep_search':
+      return typeof input.pattern === 'string' ? input.pattern : ''
+    default:
+      return typeof input.description === 'string' ? input.description : ''
+  }
+}
+
+function isGeminiNoise(text: string) {
+  const trimmed = text.trim()
+  return (
+    !trimmed
+    || trimmed.startsWith('✓')
+    || trimmed.startsWith('→')
+    || trimmed.startsWith('◆')
+    || trimmed.startsWith('⠋')
+    || trimmed.startsWith('⠙')
+    || trimmed.startsWith('⠹')
+    || trimmed.startsWith('⠸')
+    || trimmed.startsWith('⠼')
+    || trimmed.startsWith('⠴')
+    || trimmed.startsWith('⠦')
+    || trimmed.startsWith('⠧')
+    || trimmed.startsWith('⠇')
+    || trimmed.startsWith('⠏')
+    || text.includes('Keychain initialization encountered an error')
+  )
+}
+
+function parseOpenCodeLine(
+  agent: RuntimeAgent,
+  line: string,
+  streamState: { assistantText: string; sawAssistantText: boolean },
+) {
+  let parsed: Record<string, unknown>
+  try {
+    parsed = JSON.parse(line) as Record<string, unknown>
+  } catch {
+    return
+  }
+
+  const type = typeof parsed.type === 'string' ? parsed.type : ''
+
+  switch (type) {
+    case 'text': {
+      const part = (parsed.part && typeof parsed.part === 'object' ? parsed.part : {}) as Record<string, unknown>
+      const text = typeof part.text === 'string' ? part.text : ''
+      if (text) {
+        streamState.assistantText += text
+      }
+      return
+    }
+    case 'assistant.tool_call': {
+      const part = (parsed.part && typeof parsed.part === 'object' ? parsed.part : {}) as Record<string, unknown>
+      const toolName = typeof part.name === 'string' ? part.name : 'Tool'
+      pushMessage(agent, 'toolUse', toolName)
+      broadcastState()
+      return
+    }
+    case 'assistant.tool_result': {
+      const part = (parsed.part && typeof parsed.part === 'object' ? parsed.part : {}) as Record<string, unknown>
+      const output = typeof part.result === 'string' ? part.result : ''
+      const isError = part.status === 'error'
+      pushMessage(agent, 'toolResult', output ? String(output.slice(0, 80)) : isError ? 'Tool failed' : 'Tool finished')
+      broadcastState()
+      return
+    }
+    case 'result': {
+      const finalText = streamState.assistantText.trim()
+      if (finalText) {
+        pushMessage(agent, 'assistant', finalText)
+        streamState.assistantText = ''
+        streamState.sawAssistantText = true
+        broadcastState()
+      }
+      return
+    }
+    case 'error': {
+      const message = typeof parsed.message === 'string' ? parsed.message : 'OpenCode turn failed'
+      pushMessage(agent, 'error', message)
+      broadcastState()
+    }
   }
 }
 
@@ -859,22 +1356,22 @@ function updateAllWindowPositions(forceShow = false) {
 }
 
 function buildSnapshot(): RendererSnapshot {
+  const providers = Object.fromEntries(
+    availableProviders.map((provider) => [
+      provider,
+      {
+        installed: Boolean(state.providerPaths[provider]),
+        path: state.providerPaths[provider],
+        label: providerDisplayName(provider),
+      },
+    ]),
+  ) as RendererSnapshot['providers']
+
   return {
     config: state.config,
     availableThemes,
     completionPulseId: state.completionPulseId,
-    providers: {
-      codex: {
-        installed: Boolean(state.providerPaths.codex),
-        path: state.providerPaths.codex,
-        label: providerDisplayName('codex'),
-      },
-      claude: {
-        installed: Boolean(state.providerPaths.claude),
-        path: state.providerPaths.claude,
-        label: providerDisplayName('claude'),
-      },
-    },
+    providers,
     activeProvider: {
       name: state.config.provider,
       label: providerDisplayName(state.config.provider),
@@ -1068,7 +1565,7 @@ function readConfig(): AppConfig {
     return {
       ...defaults,
       ...parsed,
-      provider: parsed.provider === 'claude' ? 'claude' : 'codex',
+      provider: isProviderName(parsed.provider) ? parsed.provider : 'codex',
       agentAnchors: parsed.agentAnchors ?? defaults.agentAnchors,
     }
   } catch {
@@ -1087,6 +1584,18 @@ async function findCodexPath() {
 
 async function findClaudePath() {
   return findProviderPath('claude')
+}
+
+async function findCopilotPath() {
+  return findProviderPath('copilot')
+}
+
+async function findGeminiPath() {
+  return findProviderPath('gemini')
+}
+
+async function findOpenCodePath() {
+  return findProviderPath('opencode')
 }
 
 async function findProviderPath(binaryName: string) {
@@ -1122,13 +1631,46 @@ async function ensureProviderPath(provider: ProviderName) {
     return state.providerPaths[provider]
   }
 
-  const resolved = provider === 'claude' ? await findClaudePath() : await findCodexPath()
+  let resolved: string | null
+  switch (provider) {
+    case 'claude':
+      resolved = await findClaudePath()
+      break
+    case 'copilot':
+      resolved = await findCopilotPath()
+      break
+    case 'gemini':
+      resolved = await findGeminiPath()
+      break
+    case 'opencode':
+      resolved = await findOpenCodePath()
+      break
+    case 'codex':
+    default:
+      resolved = await findCodexPath()
+      break
+  }
   state.providerPaths[provider] = resolved
   return resolved
 }
 
 function providerDisplayName(provider: ProviderName) {
-  return provider === 'claude' ? 'Claude Code' : 'Codex'
+  switch (provider) {
+    case 'claude':
+      return 'Claude Code'
+    case 'codex':
+      return 'Codex'
+    case 'copilot':
+      return 'Copilot'
+    case 'gemini':
+      return 'Gemini'
+    case 'opencode':
+      return 'OpenCode'
+  }
+}
+
+function isProviderName(value: unknown): value is ProviderName {
+  return value === 'claude' || value === 'codex' || value === 'copilot' || value === 'gemini' || value === 'opencode'
 }
 
 function randomItem<T>(items: T[]) {
