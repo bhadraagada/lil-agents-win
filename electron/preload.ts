@@ -27,4 +27,9 @@ contextBridge.exposeInMainWorld('lilAgents', {
   chooseWorkspace: () => ipcRenderer.invoke('app:choose-workspace') as Promise<ChooseWorkspaceResult>,
   updateConfig: (patch: Partial<AppConfig>) => ipcRenderer.invoke('config:update', patch) as Promise<void>,
   revealAgents: () => ipcRenderer.invoke('app:reveal-agents') as Promise<void>,
+  startAgentDrag: (agentId: number, pointerOffsetX: number) =>
+    ipcRenderer.invoke('agent:drag-start', { agentId, pointerOffsetX }) as Promise<void>,
+  moveAgentDrag: (agentId: number, screenX: number) =>
+    ipcRenderer.invoke('agent:drag-move', { agentId, screenX }) as Promise<void>,
+  endAgentDrag: (agentId: number) => ipcRenderer.invoke('agent:drag-end', agentId) as Promise<void>,
 })

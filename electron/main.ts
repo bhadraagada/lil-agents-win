@@ -31,6 +31,7 @@ type RuntimeAgent = {
   accent: string
   x: number
   y: number
+  anchorX: number
   direction: 1 | -1
   trackStart: number
   trackEnd: number
@@ -38,8 +39,10 @@ type RuntimeAgent = {
   walkStartTime: number
   walkStartX: number
   walkEndX: number
+  dragPointerOffsetX: number
   isBusy: boolean
   isWalking: boolean
+  isDragging: boolean
   walkCycleId: number
   isPopoverVisible: boolean
   history: TranscriptMessage[]
@@ -189,6 +192,52 @@ ipcMain.handle('config:update', (_event, patch: Partial<AppConfig>) => {
 
 ipcMain.handle('app:reveal-agents', () => {
   updateAllWindowPositions(true)
+})
+
+ipcMain.handle('agent:drag-start', (_event, payload: { agentId: number; pointerOffsetX: number }) => {
+  const agent = getAgent(payload.agentId)
+  if (!agent) {
+    return
+  }
+
+  agent.dragPointerOffsetX = payload.pointerOffsetX
+  agent.isDragging = true
+  agent.isWalking = false
+  agent.pauseUntil = Date.now() + 4000
+  syncAttachedWindows(agent)
+  broadcastState()
+})
+
+ipcMain.handle('agent:drag-move', (_event, payload: { agentId: number; screenX: number }) => {
+  const agent = getAgent(payload.agentId)
+  if (!agent || !agent.isDragging) {
+    return
+  }
+
+  const primaryDisplay = screen.getPrimaryDisplay()
+  const workArea = primaryDisplay.workArea
+  const left = clamp(payload.screenX - agent.dragPointerOffsetX, workArea.x, workArea.x + workArea.width - agentSize.width)
+  const center = left + agentSize.width / 2
+  setAgentAnchor(agent, center)
+  agent.x = left
+  syncAttachedWindows(agent)
+})
+
+ipcMain.handle('agent:drag-end', (_event, agentId: number) => {
+  const agent = getAgent(agentId)
+  if (!agent) {
+    return
+  }
+
+  agent.isDragging = false
+  agent.isWalking = false
+  agent.pauseUntil = Date.now() + 2500
+  updateConfig({
+    agentAnchors: {
+      ...state.config.agentAnchors,
+      [agent.name]: agent.anchorX,
+    },
+  })
 })
 
 async function runCodexTurn(agent: RuntimeAgent, text: string, workspacePath: string) {
@@ -370,6 +419,11 @@ function startAnimationLoop() {
         shouldBroadcast = true
       }
 
+      if (agent.isDragging) {
+        syncAttachedWindows(agent)
+        continue
+      }
+
       if (now < agent.pauseUntil) {
         agent.isWalking = false
         if (agent.isWalking !== wasWalking) {
@@ -464,6 +518,7 @@ function createAgentWindows() {
       ...popoverSize,
       show: false,
       frame: false,
+      transparent: true,
       resizable: false,
       skipTaskbar: true,
       alwaysOnTop: true,
@@ -519,11 +574,27 @@ function createSettingsWindow() {
 }
 
 function createTray() {
+  // Tray icon: Two cute overlapping agent faces (Bruce=green, Jazz=orange)
   const icon = nativeImage.createFromDataURL(`data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
     <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-      <rect width="64" height="64" rx="18" fill="#1b1f2a"/>
-      <circle cx="23" cy="28" r="12" fill="#4fd18a"/>
-      <circle cx="41" cy="36" r="12" fill="#ff8b3d"/>
+      <defs>
+        <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" style="stop-color:#2a2f3d"/>
+          <stop offset="100%" style="stop-color:#1a1d26"/>
+        </linearGradient>
+      </defs>
+      <!-- Background -->
+      <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+      <!-- Bruce (green agent - back) -->
+      <circle cx="22" cy="30" r="14" fill="#3ecf8e"/>
+      <circle cx="17" cy="27" r="3" fill="#1a1d26"/>
+      <circle cx="27" cy="27" r="3" fill="#1a1d26"/>
+      <ellipse cx="22" cy="35" rx="5" ry="3" fill="#1a1d26" opacity="0.6"/>
+      <!-- Jazz (orange agent - front) -->
+      <circle cx="42" cy="38" r="14" fill="#ff8b3d"/>
+      <circle cx="37" cy="35" r="3" fill="#1a1d26"/>
+      <circle cx="47" cy="35" r="3" fill="#1a1d26"/>
+      <ellipse cx="42" cy="43" rx="5" ry="3" fill="#1a1d26" opacity="0.6"/>
     </svg>
   `)}`)
   state.tray = new Tray(icon)
@@ -594,11 +665,11 @@ function updateAllWindowPositions(forceShow = false) {
 
   for (const [index, agent] of state.agents.entries()) {
     const offset = index === 0 ? -state.config.manualSpread / 2 : state.config.manualSpread / 2
-    const trackCenter = centerX + offset
-    agent.trackStart = trackCenter - 180
-    agent.trackEnd = trackCenter + 180
+    const savedAnchor = state.config.agentAnchors[agent.name]
+    const trackCenter = savedAnchor ?? agent.anchorX ?? centerX + offset
+    setAgentAnchor(agent, trackCenter)
     if (forceShow || !Number.isFinite(agent.x)) {
-      agent.x = trackCenter
+      agent.x = agent.anchorX - agentSize.width / 2
     }
     agent.x = clamp(agent.x, agent.trackStart, agent.trackEnd)
     agent.y = sharedY
@@ -653,6 +724,7 @@ function createRuntimeAgent(
     accent,
     x: progressSeed * 100,
     y: 0,
+    anchorX: 0,
     direction: id === 0 ? 1 : -1,
     trackStart: 0,
     trackEnd: 0,
@@ -660,8 +732,10 @@ function createRuntimeAgent(
     walkStartTime: 0,
     walkStartX: 0,
     walkEndX: 0,
+    dragPointerOffsetX: 0,
     isBusy: false,
     isWalking: false,
+    isDragging: false,
     walkCycleId: 0,
     isPopoverVisible: false,
     history: [],
@@ -745,7 +819,11 @@ function pushMessage(agent: RuntimeAgent, role: TranscriptMessage['role'], text:
 }
 
 function updateConfig(patch: Partial<AppConfig>) {
-  state.config = { ...state.config, ...patch }
+  state.config = {
+    ...state.config,
+    ...patch,
+    agentAnchors: patch.agentAnchors ?? state.config.agentAnchors,
+  }
   writeConfig(state.config)
   updateAllWindowPositions()
   broadcastState()
@@ -784,6 +862,7 @@ function readConfig(): AppConfig {
     soundsEnabled: true,
     manualLift: 20,
     manualSpread: 220,
+    agentAnchors: {},
   }
 
   const filePath = configPath()
@@ -793,7 +872,12 @@ function readConfig(): AppConfig {
 
   try {
     const parsed = JSON.parse(readFileSync(filePath, 'utf8')) as Partial<AppConfig>
-    return { ...defaults, ...parsed, provider: 'codex' }
+    return {
+      ...defaults,
+      ...parsed,
+      provider: 'codex',
+      agentAnchors: parsed.agentAnchors ?? defaults.agentAnchors,
+    }
   } catch {
     return defaults
   }
@@ -831,4 +915,10 @@ function randomItem<T>(items: T[]) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max)
+}
+
+function setAgentAnchor(agent: RuntimeAgent, centerX: number) {
+  agent.anchorX = centerX
+  agent.trackStart = centerX - 180
+  agent.trackEnd = centerX + 180 - agentSize.width
 }

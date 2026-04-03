@@ -33,6 +33,10 @@ export interface AgentSnapshot {
   bubble: BubbleSnapshot | null
 }
 
+export interface AgentAnchorMap {
+  [agentName: string]: number
+}
+
 export interface AppConfig {
   provider: 'codex'
   workspacePath: string | null
@@ -41,6 +45,7 @@ export interface AppConfig {
   soundsEnabled: boolean
   manualLift: number
   manualSpread: number
+  agentAnchors: AgentAnchorMap
 }
 
 export interface RendererSnapshot {
@@ -76,6 +81,9 @@ declare global {
       chooseWorkspace: () => Promise<ChooseWorkspaceResult>
       updateConfig: (patch: Partial<AppConfig>) => Promise<void>
       revealAgents: () => Promise<void>
+      startAgentDrag: (agentId: number, pointerOffsetX: number) => Promise<void>
+      moveAgentDrag: (agentId: number, screenX: number) => Promise<void>
+      endAgentDrag: (agentId: number) => Promise<void>
     }
   }
 }

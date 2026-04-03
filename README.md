@@ -2,6 +2,8 @@
 
 `lil agents` is a Windows desktop app that puts animated characters above the taskbar and opens a floating terminal-style AI chat when you click them.
 
+![alt text](image.png)
+
 This repo is the Electron + React + Vite Windows port.
 
 ## Features
