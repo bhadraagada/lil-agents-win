@@ -1,13 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { JSX, ReactNode } from 'react'
 import type {
   AgentSnapshot,
+  AgentSize,
   AppConfig,
+  ProviderName,
   RendererSnapshot,
   ThemeName,
   TranscriptMessage,
   WindowRoute,
 } from './lib/types'
 import { parseWindowRoute } from './lib/window-route'
+import bruceVideoUrl from '/agents/bruce.webm?url'
+import jazzVideoUrl from '/agents/jazz.webm?url'
 
 type Notice = {
   id: number
@@ -21,6 +26,7 @@ function App() {
   const [bridgeError, setBridgeError] = useState<string | null>(
     window.lilAgents ? null : 'Electron preload bridge is missing. The renderer loaded, but window.lilAgents was not injected.',
   )
+  const lastCompletionPulseRef = useRef<number | null>(null)
 
   useEffect(() => {
     if (!window.lilAgents) {
@@ -56,6 +62,28 @@ function App() {
     document.body.dataset.theme = snapshot.config.theme
   }, [snapshot])
 
+  useEffect(() => {
+    if (!snapshot) {
+      return
+    }
+
+    if (lastCompletionPulseRef.current == null) {
+      lastCompletionPulseRef.current = snapshot.completionPulseId
+      return
+    }
+
+    if (
+      snapshot.completionPulseId !== lastCompletionPulseRef.current
+      && snapshot.config.soundsEnabled
+      && route.kind === 'agent'
+      && route.agentId === 0
+    ) {
+      playCompletionChime()
+    }
+
+    lastCompletionPulseRef.current = snapshot.completionPulseId
+  }, [route, snapshot])
+
   if (!snapshot) {
     if (bridgeError) {
       return <div className="boot-screen">{bridgeError}</div>
@@ -76,6 +104,10 @@ function App() {
   }
 }
 
+function agentVideoUrl(variant: 'bruce' | 'jazz') {
+  return variant === 'bruce' ? bruceVideoUrl : jazzVideoUrl
+}
+
 function AgentWindow({
   route,
   snapshot,
@@ -85,6 +117,7 @@ function AgentWindow({
 }) {
   const agent = getAgent(snapshot, route.agentId)
   const videoRef = useRef<HTMLVideoElement>(null)
+  const hitCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const dragRef = useRef({ active: false, moved: false, startScreenX: 0 })
 
   useEffect(() => {
@@ -106,15 +139,67 @@ function AgentWindow({
     return <div className="boot-screen">missing agent</div>
   }
 
+  const currentAgent = agent
+
+  function hitTestVideoPixel(event: React.PointerEvent<HTMLButtonElement>) {
+    const video = videoRef.current
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
+      return true
+    }
+
+    const rect = video.getBoundingClientRect()
+    const localX = event.clientX - rect.left
+    const localY = event.clientY - rect.top
+    const scale = Math.min(rect.width / video.videoWidth, rect.height / video.videoHeight)
+    const renderWidth = video.videoWidth * scale
+    const renderHeight = video.videoHeight * scale
+    const offsetX = (rect.width - renderWidth) / 2
+    const offsetY = (rect.height - renderHeight) / 2
+
+    if (
+      localX < offsetX
+      || localX > offsetX + renderWidth
+      || localY < offsetY
+      || localY > offsetY + renderHeight
+    ) {
+      return false
+    }
+
+    const sampleXRatio = (localX - offsetX) / renderWidth
+    const sampleYRatio = (localY - offsetY) / renderHeight
+    const sourceX = Math.floor((currentAgent.facing === 'left' ? 1 - sampleXRatio : sampleXRatio) * (video.videoWidth - 1))
+    const sourceY = Math.floor(sampleYRatio * (video.videoHeight - 1))
+
+    if (!hitCanvasRef.current) {
+      hitCanvasRef.current = document.createElement('canvas')
+      hitCanvasRef.current.width = 1
+      hitCanvasRef.current.height = 1
+    }
+
+    const context = hitCanvasRef.current.getContext('2d', { willReadFrequently: true })
+    if (!context) {
+      return true
+    }
+
+    context.clearRect(0, 0, 1, 1)
+    context.drawImage(video, sourceX, sourceY, 1, 1, 0, 0, 1, 1)
+    const alpha = context.getImageData(0, 0, 1, 1).data[3]
+    return alpha > 30
+  }
+
   return (
     <button
       className={`agent-shell ${agent.variant} ${agent.isBusy ? 'busy' : ''} ${agent.isWalking ? 'walking' : 'idle'} ${agent.facing}`}
       title={`Open ${agent.name}`}
       type="button"
       onPointerDown={(event) => {
+        if (!hitTestVideoPixel(event)) {
+          return
+        }
+
         dragRef.current = { active: true, moved: false, startScreenX: event.screenX }
         event.currentTarget.setPointerCapture(event.pointerId)
-        void window.lilAgents.startAgentDrag(agent.id, event.clientX)
+        void window.lilAgents.startAgentDrag(currentAgent.id, event.clientX)
       }}
       onPointerMove={(event) => {
         if (!dragRef.current.active) {
@@ -125,7 +210,7 @@ function AgentWindow({
           dragRef.current.moved = true
         }
 
-        void window.lilAgents.moveAgentDrag(agent.id, event.screenX)
+        void window.lilAgents.moveAgentDrag(currentAgent.id, event.screenX)
       }}
       onPointerUp={(event) => {
         if (!dragRef.current.active) {
@@ -135,9 +220,9 @@ function AgentWindow({
         event.currentTarget.releasePointerCapture(event.pointerId)
         const wasDrag = dragRef.current.moved
         dragRef.current.active = false
-        void window.lilAgents.endAgentDrag(agent.id).then(() => {
+        void window.lilAgents.endAgentDrag(currentAgent.id).then(() => {
           if (!wasDrag) {
-            void window.lilAgents.togglePopover(agent.id)
+            void window.lilAgents.togglePopover(currentAgent.id)
           }
         })
       }}
@@ -147,12 +232,12 @@ function AgentWindow({
         }
 
         dragRef.current.active = false
-        void window.lilAgents.endAgentDrag(agent.id)
+        void window.lilAgents.endAgentDrag(currentAgent.id)
       }}
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault()
-          void window.lilAgents.togglePopover(agent.id)
+          void window.lilAgents.togglePopover(currentAgent.id)
         }
       }}
     >
@@ -161,7 +246,7 @@ function AgentWindow({
         <video
           ref={videoRef}
           className="agent-video"
-          src={agent.variant === 'bruce' ? '/agents/bruce.webm' : '/agents/jazz.webm'}
+          src={agentVideoUrl(agent.variant)}
           autoPlay
           loop
           muted
@@ -171,6 +256,45 @@ function AgentWindow({
       </div>
     </button>
   )
+}
+
+function playCompletionChime() {
+  const AudioContextCtor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+  if (!AudioContextCtor) {
+    return
+  }
+
+  const context = new AudioContextCtor()
+  const presets = [
+    [523.25, 659.25, 783.99],
+    [493.88, 587.33, 739.99],
+    [587.33, 698.46, 880],
+  ]
+  const notes = presets[Math.floor(Math.random() * presets.length)]
+  const start = context.currentTime + 0.01
+
+  notes.forEach((frequency, index) => {
+    const oscillator = context.createOscillator()
+    const gain = context.createGain()
+    oscillator.type = index === notes.length - 1 ? 'triangle' : 'sine'
+    oscillator.frequency.value = frequency
+
+    const noteStart = start + index * 0.08
+    const noteEnd = noteStart + 0.24
+
+    gain.gain.setValueAtTime(0.0001, noteStart)
+    gain.gain.linearRampToValueAtTime(0.08, noteStart + 0.02)
+    gain.gain.exponentialRampToValueAtTime(0.0001, noteEnd)
+
+    oscillator.connect(gain)
+    gain.connect(context.destination)
+    oscillator.start(noteStart)
+    oscillator.stop(noteEnd)
+  })
+
+  window.setTimeout(() => {
+    void context.close().catch(() => {})
+  }, 900)
 }
 
 function BubbleWindow({
@@ -287,7 +411,18 @@ function PopoverWindow({
   const workspaceName = snapshot.config.workspacePath
     ? snapshot.config.workspacePath.split(/[\\/]/).pop() ?? 'workspace'
     : null
-  const providerLabel = snapshot.activeProvider.label
+  const providerLabel = snapshot.providers[currentAgent.provider].label
+
+  async function switchProvider(provider: ProviderName) {
+    await window.lilAgents.updateConfig({
+      agentProviders: {
+        ...snapshot.config.agentProviders,
+        [currentAgent.name]: provider,
+      },
+    })
+    await window.lilAgents.clearHistory(currentAgent.id)
+    clearNotice()
+  }
 
   return (
     <div className="chat-window">
@@ -307,19 +442,44 @@ function PopoverWindow({
             </p>
           </div>
         </div>
-        <button
-          type="button"
-          className="chat-settings-btn"
-          onClick={() => void window.lilAgents.openSettings()}
-          title="Settings"
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-            <rect x="3" y="3" width="7" height="7" />
-            <rect x="14" y="3" width="7" height="7" />
-            <rect x="3" y="14" width="7" height="7" />
-            <rect x="14" y="14" width="7" height="7" />
-          </svg>
-        </button>
+        <div className="chat-header-actions">
+          <select
+            className="chat-provider-select"
+            value={currentAgent.provider}
+            onChange={(event) => void switchProvider(event.target.value as ProviderName)}
+            disabled={currentAgent.isBusy}
+          >
+            {Object.entries(snapshot.providers).map(([providerName, provider]) => (
+              <option key={providerName} value={providerName} disabled={!provider.installed}>
+                {provider.label}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="chat-settings-btn"
+            onClick={() => void window.lilAgents.clearHistory(currentAgent.id)}
+            title="Reset chat"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <path d="M3 12a9 9 0 1 0 3-6.7" />
+              <polyline points="3 3 3 9 9 9" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className="chat-settings-btn"
+            onClick={() => void window.lilAgents.openSettings()}
+            title="Settings"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <rect x="3" y="3" width="7" height="7" />
+              <rect x="14" y="3" width="7" height="7" />
+              <rect x="3" y="14" width="7" height="7" />
+              <rect x="14" y="14" width="7" height="7" />
+            </svg>
+          </button>
+        </div>
       </header>
 
       {/* Onboarding */}
@@ -436,14 +596,148 @@ function ChatMessage({
           {isTool && <span className="chat-msg-badge">tool</span>}
           {isError && <span className="chat-msg-badge error">error</span>}
         </div>
-        <div className="chat-msg-text">{message.text}</div>
+        <div className="chat-msg-text">{renderMarkdown(message.text)}</div>
       </div>
     </div>
   )
 }
 
+function renderMarkdown(text: string) {
+  const lines = text.split('\n')
+  const blocks: JSX.Element[] = []
+  let codeLines: string[] = []
+  let inCodeBlock = false
+
+  const flushCodeBlock = () => {
+    if (codeLines.length === 0) {
+      return
+    }
+
+    blocks.push(
+      <pre key={`code-${blocks.length}`} className="chat-code-block">
+        <code>{codeLines.join('\n')}</code>
+      </pre>,
+    )
+    codeLines = []
+  }
+
+  lines.forEach((line, index) => {
+    if (line.startsWith('```')) {
+      if (inCodeBlock) {
+        flushCodeBlock()
+      }
+      inCodeBlock = !inCodeBlock
+      return
+    }
+
+    if (inCodeBlock) {
+      codeLines.push(line)
+      return
+    }
+
+    if (!line.trim()) {
+      blocks.push(<div key={`spacer-${index}`} className="chat-line-spacer" />)
+      return
+    }
+
+    if (line.startsWith('# ')) {
+      blocks.push(<div key={`h1-${index}`} className="chat-md-h1">{renderInlineMarkdown(line.slice(2))}</div>)
+      return
+    }
+
+    if (line.startsWith('## ')) {
+      blocks.push(<div key={`h2-${index}`} className="chat-md-h2">{renderInlineMarkdown(line.slice(3))}</div>)
+      return
+    }
+
+    if (line.startsWith('### ')) {
+      blocks.push(<div key={`h3-${index}`} className="chat-md-h3">{renderInlineMarkdown(line.slice(4))}</div>)
+      return
+    }
+
+    if (line.startsWith('- ') || line.startsWith('* ')) {
+      blocks.push(
+        <div key={`li-${index}`} className="chat-md-li">
+          <span className="chat-md-bullet">•</span>
+          <span>{renderInlineMarkdown(line.slice(2))}</span>
+        </div>,
+      )
+      return
+    }
+
+    blocks.push(<div key={`p-${index}`}>{renderInlineMarkdown(line)}</div>)
+  })
+
+  if (inCodeBlock) {
+    flushCodeBlock()
+  }
+
+  return blocks
+}
+
+function renderInlineMarkdown(text: string) {
+  const nodes: ReactNode[] = []
+  const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^\)]+\)|https?:\/\/\S+)/g
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      nodes.push(text.slice(lastIndex, match.index))
+    }
+
+    const token = match[0]
+
+    if (token.startsWith('**') && token.endsWith('**')) {
+      nodes.push(<strong key={`${match.index}-bold`}>{token.slice(2, -2)}</strong>)
+    } else if (token.startsWith('`') && token.endsWith('`')) {
+      nodes.push(<code key={`${match.index}-code`} className="chat-inline-code">{token.slice(1, -1)}</code>)
+    } else if (token.startsWith('[')) {
+      const parts = token.match(/^\[([^\]]+)\]\(([^\)]+)\)$/)
+      if (parts) {
+        nodes.push(
+          <a
+            key={`${match.index}-link`}
+            href={parts[2]}
+            onClick={(event) => {
+              event.preventDefault()
+              void window.lilAgents.openExternal(parts[2])
+            }}
+          >
+            {parts[1]}
+          </a>,
+        )
+      } else {
+        nodes.push(token)
+      }
+    } else {
+      nodes.push(
+        <a
+          key={`${match.index}-url`}
+          href={token}
+          onClick={(event) => {
+            event.preventDefault()
+            void window.lilAgents.openExternal(token)
+          }}
+        >
+          {token}
+        </a>,
+      )
+    }
+
+    lastIndex = match.index + token.length
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex))
+  }
+
+  return nodes
+}
+
 function SettingsWindow({ snapshot }: { snapshot: RendererSnapshot }) {
   const config = snapshot.config
+  const [isAdvancedOpen, setIsAdvancedOpen] = useState(false)
 
   async function updateConfig(patch: Partial<AppConfig>) {
     await window.lilAgents.updateConfig(patch)
@@ -456,13 +750,57 @@ function SettingsWindow({ snapshot }: { snapshot: RendererSnapshot }) {
   const workspaceDisplay = config.workspacePath
     ? config.workspacePath.split(/[\\/]/).slice(-2).join('/')
     : null
-  const providerEntries = Object.entries(snapshot.providers) as Array<[keyof typeof snapshot.providers, typeof snapshot.providers.codex]>
-  const providerDescriptions: Record<keyof typeof snapshot.providers, string> = {
+  const providerEntries = Object.entries(snapshot.providers) as Array<[ProviderName, RendererSnapshot['providers'][ProviderName]]>
+  const sizeOptions: AgentSize[] = ['large', 'medium', 'small']
+  const providerDescriptions: Record<ProviderName, string> = {
     claude: 'Anthropic CLI workflow with tool streaming.',
     codex: 'OpenAI Codex CLI with JSON event output.',
     copilot: 'GitHub Copilot CLI for coding tasks and shell actions.',
     gemini: 'Google Gemini CLI with yolo-style agent mode.',
     opencode: 'OpenCode CLI with JSON-formatted run events.',
+  }
+  const modelPlaceholders: Record<ProviderName, string> = {
+    claude: 'sonnet or claude-sonnet-4-5-20250929',
+    codex: 'gpt-5-codex',
+    copilot: 'gpt-5.3-codex',
+    gemini: 'gemini-2.5-pro or gemini-2.5-flash',
+    opencode: 'anthropic/claude-sonnet-4-5-20250929',
+  }
+
+  function updateProviderModel(providerName: ProviderName, value: string) {
+    void updateConfig({
+      providerModels: {
+        ...config.providerModels,
+        [providerName]: value,
+      },
+    })
+  }
+
+  function updateAgentProvider(agentName: string, providerName: ProviderName) {
+    void updateConfig({
+      agentProviders: {
+        ...config.agentProviders,
+        [agentName]: providerName,
+      },
+    })
+  }
+
+  function updateAgentSize(agentName: string, size: AgentSize) {
+    void updateConfig({
+      agentSizes: {
+        ...config.agentSizes,
+        [agentName]: size,
+      },
+    })
+  }
+
+  function updateAgentVisibility(agentName: string, isVisible: boolean) {
+    void updateConfig({
+      visibleAgents: {
+        ...config.visibleAgents,
+        [agentName]: isVisible,
+      },
+    })
   }
 
   return (
@@ -476,7 +814,7 @@ function SettingsWindow({ snapshot }: { snapshot: RendererSnapshot }) {
           </div>
           <div className="settings-brand-text">
             <h1>lil agents</h1>
-            <span className="version-tag">v0.1.0 beta</span>
+            <span className="version-tag">v0.2.0 beta</span>
           </div>
         </div>
         
@@ -517,15 +855,55 @@ function SettingsWindow({ snapshot }: { snapshot: RendererSnapshot }) {
 
         <div className="settings-content">
           <section className="settings-section">
-            <h3>Provider</h3>
+            <h3>Agents</h3>
+            <div className="agent-config-grid">
+              {snapshot.agents.map((agent) => (
+                <div key={agent.id} className="agent-config-card">
+                  <div className="agent-config-header">
+                    <div>
+                      <div className="agent-config-title">{agent.name}</div>
+                      <div className="agent-config-copy">Configure provider, size, and visibility.</div>
+                    </div>
+                    <span className={`provider-pill ${agent.isVisible ? 'success' : 'error'}`}>
+                      {agent.isVisible ? 'Visible' : 'Hidden'}
+                    </span>
+                  </div>
+                  <label className="setting-field">
+                    <span>Provider</span>
+                    <select value={agent.provider} onChange={(event) => updateAgentProvider(agent.name, event.target.value as ProviderName)}>
+                      {providerEntries.map(([providerName, provider]) => (
+                        <option key={`${agent.name}-${providerName}`} value={providerName} disabled={!provider.installed}>
+                          {provider.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="setting-field">
+                    <span>Size</span>
+                    <select value={agent.size} onChange={(event) => updateAgentSize(agent.name, event.target.value as AgentSize)}>
+                      {sizeOptions.map((size) => (
+                        <option key={`${agent.name}-${size}`} value={size}>{size}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="setting-field checkbox-field">
+                    <span>Visible</span>
+                    <input
+                      type="checkbox"
+                      checked={agent.isVisible}
+                      onChange={(event) => updateAgentVisibility(agent.name, event.target.checked)}
+                    />
+                  </label>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="settings-section">
+            <h3>Providers</h3>
             <div className="provider-grid">
               {providerEntries.map(([providerName, provider]) => (
-                <button
-                  key={providerName}
-                  type="button"
-                  className={`provider-option ${config.provider === providerName ? 'active' : ''}`}
-                  onClick={() => void updateConfig({ provider: providerName })}
-                >
+                <div key={providerName} className="provider-option provider-static">
                   <div className="provider-option-header">
                     <span className="provider-option-title">{provider.label}</span>
                     <span className={`provider-pill ${provider.installed ? 'success' : 'error'}`}>
@@ -535,29 +913,60 @@ function SettingsWindow({ snapshot }: { snapshot: RendererSnapshot }) {
                   <span className="provider-option-copy">
                     {providerDescriptions[providerName]}
                   </span>
-                </button>
+                </div>
               ))}
             </div>
           </section>
 
+          <section className="settings-section">
+            <button
+              type="button"
+              className={`accordion-trigger ${isAdvancedOpen ? 'open' : ''}`}
+              onClick={() => setIsAdvancedOpen((open) => !open)}
+            >
+              <span>Advanced</span>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+
+            {isAdvancedOpen ? (
+              <div className="accordion-panel">
+                <p className="accordion-copy">Leave a field blank to use that provider&apos;s default CLI model.</p>
+                <div className="model-grid">
+                  {providerEntries.map(([providerName, provider]) => (
+                    <label key={`${providerName}-model`} className="model-field">
+                      <div className="model-field-header">
+                        <span className="model-field-title">{provider.label} model</span>
+                        {config.provider === providerName ? <span className="provider-pill success">Active</span> : null}
+                      </div>
+                      <input
+                        type="text"
+                        value={config.providerModels[providerName]}
+                        onChange={(event) => updateProviderModel(providerName, event.target.value)}
+                        placeholder={modelPlaceholders[providerName]}
+                        spellCheck={false}
+                      />
+                      <span className="model-field-copy">Blank keeps the provider default.</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </section>
+
           {/* Status Cards */}
           <div className="status-cards">
-            <div className={`status-card ${snapshot.providers[config.provider].installed ? 'success' : 'error'}`}>
+            <div className="status-card neutral">
               <div className="status-icon">
-                {snapshot.providers[config.provider].installed ? (
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <polyline points="20 6 9 17 4 12"/>
-                  </svg>
-                ) : (
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <line x1="18" y1="6" x2="6" y2="18"/>
-                    <line x1="6" y1="6" x2="18" y2="18"/>
-                  </svg>
-                )}
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <circle cx="12" cy="12" r="8" />
+                  <path d="M12 8v4l2.5 2.5" />
+                </svg>
               </div>
               <div className="status-info">
-                <span className="status-label">Active provider</span>
-                <span className="status-value">{snapshot.activeProvider.label}</span>
+                <span className="status-label">Installed CLIs</span>
+                <span className="status-value">{providerEntries.filter(([, provider]) => provider.installed).length} available</span>
               </div>
             </div>
 
@@ -576,6 +985,24 @@ function SettingsWindow({ snapshot }: { snapshot: RendererSnapshot }) {
               </button>
             </div>
           </div>
+
+          <section className="settings-section">
+            <h3>Display</h3>
+            <label className="setting-field">
+              <span>Target display</span>
+              <select
+                value={config.pinnedDisplayId == null ? 'primary' : String(config.pinnedDisplayId)}
+                onChange={(event) => void updateConfig({
+                  pinnedDisplayId: event.target.value === 'primary' ? null : Number(event.target.value),
+                })}
+              >
+                <option value="primary">Primary display</option>
+                {snapshot.availableDisplays.map((display) => (
+                  <option key={display.id} value={display.id}>{display.label}</option>
+                ))}
+              </select>
+            </label>
+          </section>
 
           {/* Theme Section */}
           <section className="settings-section">

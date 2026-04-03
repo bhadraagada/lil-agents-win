@@ -147,7 +147,7 @@ body {
 }
 
 /* Base Elements */
-button, input {
+button, input, select {
   font: inherit;
 }
 
@@ -190,7 +190,17 @@ input {
   font-family: var(--font-mono);
 }
 
-input:focus {
+select {
+  border: var(--border-width) solid var(--border-bold);
+  background: var(--bg);
+  color: var(--text-primary);
+  padding: 0.875rem 1rem;
+  outline: none;
+  font-family: var(--font-mono);
+}
+
+input:focus,
+select:focus {
   border-color: var(--accent-primary);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-primary) 25%, transparent);
 }
@@ -455,6 +465,18 @@ input:focus {
   color: #fff;
 }
 
+.chat-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.chat-provider-select {
+  min-width: 150px;
+  padding: 0.65rem 0.75rem;
+  font-size: 12px;
+}
+
 /* === ONBOARDING === */
 .chat-onboarding {
   margin: 12px;
@@ -691,6 +713,69 @@ input:focus {
   background: var(--surface);
   border: 3px solid var(--border-bold);
   box-shadow: var(--shadow-brutal-sm);
+}
+
+.chat-msg-text a {
+  color: var(--accent-tertiary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.chat-msg-text strong {
+  font-weight: 700;
+}
+
+.chat-inline-code {
+  padding: 0.1rem 0.35rem;
+  border: 2px solid var(--border-bold);
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.chat-code-block {
+  margin: 0.4rem 0;
+  padding: 0.75rem;
+  border: 2px solid var(--border-bold);
+  background: var(--bg);
+  overflow-x: auto;
+}
+
+.chat-code-block code {
+  font-family: var(--font-mono);
+}
+
+.chat-line-spacer {
+  height: 0.6rem;
+}
+
+.chat-md-h1,
+.chat-md-h2,
+.chat-md-h3 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.chat-md-h1 {
+  font-size: 18px;
+}
+
+.chat-md-h2 {
+  font-size: 16px;
+}
+
+.chat-md-h3 {
+  font-size: 14px;
+}
+
+.chat-md-li {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+
+.chat-md-bullet {
+  color: var(--accent-primary);
 }
 
 .chat-message.user .chat-msg-text {
@@ -1126,6 +1211,15 @@ input:focus {
   border-color: var(--accent-primary);
 }
 
+.provider-static {
+  cursor: default;
+}
+
+.provider-static:hover {
+  transform: none;
+  box-shadow: var(--shadow-brutal-sm);
+}
+
 .provider-option-header {
   width: 100%;
   display: flex;
@@ -1162,6 +1256,129 @@ input:focus {
 .provider-pill.error {
   color: var(--accent-error);
   border-color: var(--accent-error);
+}
+
+.agent-config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.agent-config-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 3px solid var(--border-bold);
+  background: var(--surface);
+  box-shadow: var(--shadow-brutal-sm);
+}
+
+.agent-config-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-config-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.agent-config-copy {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.setting-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.setting-field > span {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.checkbox-field input {
+  width: 18px;
+  height: 18px;
+}
+
+.accordion-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  text-align: left;
+}
+
+.accordion-trigger svg {
+  transition: transform var(--transition-snap);
+}
+
+.accordion-trigger.open svg {
+  transform: rotate(180deg);
+}
+
+.accordion-panel {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.accordion-copy {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.model-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.model-field {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border: 3px solid var(--border-bold);
+  background: var(--surface);
+  box-shadow: var(--shadow-brutal-sm);
+}
+
+.model-field-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.model-field-title {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.model-field input {
+  width: 100%;
+}
+
+.model-field-copy {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 /* === THEME GRID === */

@@ -2,22 +2,63 @@ import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, screen, s
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
-import type { AppConfig, AgentSnapshot, ProviderName, RendererSnapshot, TranscriptMessage, ThemeName } from '../src/lib/types'
+import type { AgentSize, AppConfig, AgentSnapshot, ProviderName, RendererSnapshot, TranscriptMessage, ThemeName } from '../src/lib/types'
 
-const isDev = !app.isPackaged
-const devServerUrl = 'http://127.0.0.1:5173'
+const devServerUrl = process.env.VITE_DEV_SERVER_URL || ''
+const isDev = Boolean(devServerUrl)
 const availableThemes: ThemeName[] = ['Peach', 'Midnight', 'Cloud', 'Moss']
 const availableProviders: ProviderName[] = ['claude', 'codex', 'copilot', 'gemini', 'opencode']
 const thinkingPhrases = ['thinking...', 'working on it', 'one sec...', 'checking files', 'running tools']
 const completionPhrases = ['done!', 'all set!', 'ready', 'check it out']
-const agentSize = { width: 140, height: 160 }
 const popoverSize = { width: 480, height: 500 }
 const videoDurationMs = 10040
 const accelStartMs = 3000
 const fullSpeedStartMs = 3750
 const decelStartMs = 7500
 const walkStopMs = 8250
+
+function defaultProviderModels(): Record<ProviderName, string> {
+  return {
+    claude: '',
+    codex: '',
+    copilot: '',
+    gemini: '',
+    opencode: '',
+  }
+}
+
+function defaultAgentProviders(defaultProvider: ProviderName): Record<string, ProviderName> {
+  return {
+    Bruce: defaultProvider,
+    Jazz: defaultProvider,
+  }
+}
+
+function defaultAgentSizes(): Record<string, AgentSize> {
+  return {
+    Bruce: 'large',
+    Jazz: 'large',
+  }
+}
+
+function defaultAgentVisibility(): Record<string, boolean> {
+  return {
+    Bruce: true,
+    Jazz: true,
+  }
+}
+
+function agentDimensions(size: AgentSize) {
+  switch (size) {
+    case 'small':
+      return { width: 88, height: 100 }
+    case 'medium':
+      return { width: 114, height: 130 }
+    case 'large':
+    default:
+      return { width: 140, height: 160 }
+  }
+}
 
 type BubbleState = {
   text: string
@@ -29,6 +70,9 @@ type RuntimeAgent = {
   id: number
   name: string
   variant: 'bruce' | 'jazz'
+  provider: ProviderName
+  size: AgentSize
+  isVisible: boolean
   accent: string
   x: number
   y: number
@@ -64,8 +108,10 @@ type AppState = {
   animationTimer: NodeJS.Timeout | null
 }
 
+const initialConfig = readConfig()
+
 const state: AppState = {
-  config: readConfig(),
+  config: initialConfig,
   providerPaths: {
     claude: null,
     codex: null,
@@ -80,8 +126,8 @@ const state: AppState = {
   popoverWindows: new Map(),
   bubbleWindows: new Map(),
   agents: [
-    createRuntimeAgent(0, 'Bruce', 'bruce', '#44a86a', 0.3),
-    createRuntimeAgent(1, 'Jazz', 'jazz', '#ff7b2f', 0.7),
+    createRuntimeAgent(0, 'Bruce', 'bruce', '#44a86a', 0.3, initialConfig),
+    createRuntimeAgent(1, 'Jazz', 'jazz', '#ff7b2f', 0.7, initialConfig),
   ],
   animationTimer: null,
 }
@@ -101,27 +147,36 @@ function configPath() {
   return path.join(app.getPath('userData'), 'config.json')
 }
 
-app.setAppUserModelId('xyz.lilagents.win')
-
-const gotLock = app.requestSingleInstanceLock()
-if (!gotLock) {
-  app.quit()
+if (isDev) {
+  app.setPath('userData', path.join(app.getPath('appData'), 'lil-agents-win-dev'))
+  app.setPath('sessionData', path.join(app.getPath('appData'), 'lil-agents-win-dev-session'))
 }
 
-app.on('second-instance', () => {
-  showSettingsWindow()
-})
+app.setAppUserModelId(isDev ? 'xyz.lilagents.win.dev' : 'xyz.lilagents.win')
+
+if (!isDev) {
+  const gotLock = app.requestSingleInstanceLock()
+  if (!gotLock) {
+    app.quit()
+  }
+
+  app.on('second-instance', () => {
+    showSettingsWindow()
+  })
+}
 
 app.whenReady().then(async () => {
   const resolvedPaths = await Promise.all(availableProviders.map((provider) => ensureProviderPath(provider)))
   for (const [index, provider] of availableProviders.entries()) {
     state.providerPaths[provider] = resolvedPaths[index]
   }
+  syncAgentsFromConfig()
   createTray()
   createAgentWindows()
   createSettingsWindow()
   updateAllWindowPositions(true)
   startAnimationLoop()
+  attachScreenListeners()
   broadcastState()
 })
 
@@ -150,7 +205,7 @@ ipcMain.handle('chat:send', async (_event, payload: { agentId: number; text: str
     return { ok: false, error: 'agent not found' }
   }
 
-  const provider = state.config.provider
+  const provider = agent.provider
   const providerLabel = providerDisplayName(provider)
 
   if (agent.isBusy) {
@@ -173,20 +228,20 @@ ipcMain.handle('chat:send', async (_event, payload: { agentId: number; text: str
 
   switch (provider) {
     case 'claude':
-      await runClaudeTurn(agent, payload.text, workspacePath, providerPath)
+      await runClaudeTurn(agent, payload.text, workspacePath, providerPath, configuredModel(provider))
       break
     case 'copilot':
-      await runCopilotTurn(agent, payload.text, workspacePath, providerPath)
+      await runCopilotTurn(agent, payload.text, workspacePath, providerPath, configuredModel(provider))
       break
     case 'gemini':
-      await runGeminiTurn(agent, payload.text, workspacePath, providerPath)
+      await runGeminiTurn(agent, payload.text, workspacePath, providerPath, configuredModel(provider))
       break
     case 'opencode':
-      await runOpenCodeTurn(agent, payload.text, workspacePath, providerPath)
+      await runOpenCodeTurn(agent, payload.text, workspacePath, providerPath, configuredModel(provider))
       break
     case 'codex':
     default:
-      await runCodexTurn(agent, payload.text, workspacePath, providerPath)
+      await runCodexTurn(agent, payload.text, workspacePath, providerPath, configuredModel(provider))
       break
   }
 
@@ -211,6 +266,10 @@ ipcMain.handle('app:open-settings', () => {
   showSettingsWindow()
 })
 
+ipcMain.handle('app:open-external', (_event, url: string) => {
+  return shell.openExternal(url)
+})
+
 ipcMain.handle('app:choose-workspace', async () => {
   const path = await chooseWorkspacePath()
   return { path }
@@ -221,6 +280,9 @@ ipcMain.handle('config:update', (_event, patch: Partial<AppConfig>) => {
 })
 
 ipcMain.handle('app:reveal-agents', () => {
+  updateConfig({
+    visibleAgents: Object.fromEntries(state.agents.map((agent) => [agent.name, true])),
+  })
   updateAllWindowPositions(true)
 })
 
@@ -244,10 +306,11 @@ ipcMain.handle('agent:drag-move', (_event, payload: { agentId: number; screenX: 
     return
   }
 
-  const primaryDisplay = screen.getPrimaryDisplay()
-  const workArea = primaryDisplay.workArea
-  const left = clamp(payload.screenX - agent.dragPointerOffsetX, workArea.x, workArea.x + workArea.width - agentSize.width)
-  const center = left + agentSize.width / 2
+  const activeDisplay = selectedDisplay()
+  const workArea = activeDisplay.workArea
+  const size = agentDimensions(agent.size)
+  const left = clamp(payload.screenX - agent.dragPointerOffsetX, workArea.x, workArea.x + workArea.width - size.width)
+  const center = left + size.width / 2
   setAgentAnchor(agent, center)
   agent.x = left
   syncAttachedWindows(agent)
@@ -270,14 +333,20 @@ ipcMain.handle('agent:drag-end', (_event, agentId: number) => {
   })
 })
 
-async function runCodexTurn(agent: RuntimeAgent, text: string, workspacePath: string, codexPath: string) {
+async function runCodexTurn(agent: RuntimeAgent, text: string, workspacePath: string, codexPath: string, model: string | null) {
   agent.isBusy = true
   pushMessage(agent, 'user', text)
   setBubble(agent, randomItem(thinkingPhrases), 'thinking')
   broadcastState()
 
   const prompt = buildCodexPrompt(agent, agent.history.slice(0, -1), text)
-  const child = spawn(codexPath, ['exec', '--json', '--full-auto', '--skip-git-repo-check', prompt], {
+  const args = ['exec', '--json', '--full-auto', '--skip-git-repo-check']
+  if (model) {
+    args.push('--model', model)
+  }
+  args.push(prompt)
+
+  const child = spawn(codexPath, args, {
     cwd: workspacePath,
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -319,22 +388,23 @@ async function runCodexTurn(agent: RuntimeAgent, text: string, workspacePath: st
     setBubble(agent, completionText, 'completion', Date.now() + 3200)
     state.completionPulseId += 1
 
-    if (state.config.soundsEnabled) {
-      shell.beep()
-    }
-
     broadcastState()
   })
 }
 
-async function runClaudeTurn(agent: RuntimeAgent, text: string, workspacePath: string, claudePath: string) {
+async function runClaudeTurn(agent: RuntimeAgent, text: string, workspacePath: string, claudePath: string, model: string | null) {
   agent.isBusy = true
   pushMessage(agent, 'user', text)
   setBubble(agent, randomItem(thinkingPhrases), 'thinking')
   broadcastState()
 
   const prompt = buildCodexPrompt(agent, agent.history.slice(0, -1), text)
-  const child = spawn(claudePath, ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'], {
+  const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions']
+  if (model) {
+    args.push('--model', model)
+  }
+
+  const child = spawn(claudePath, args, {
     cwd: workspacePath,
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -384,22 +454,23 @@ async function runClaudeTurn(agent: RuntimeAgent, text: string, workspacePath: s
     setBubble(agent, completionText, 'completion', Date.now() + 3200)
     state.completionPulseId += 1
 
-    if (state.config.soundsEnabled) {
-      shell.beep()
-    }
-
     broadcastState()
   })
 }
 
-async function runCopilotTurn(agent: RuntimeAgent, text: string, workspacePath: string, copilotPath: string) {
+async function runCopilotTurn(agent: RuntimeAgent, text: string, workspacePath: string, copilotPath: string, model: string | null) {
   agent.isBusy = true
   pushMessage(agent, 'user', text)
   setBubble(agent, randomItem(thinkingPhrases), 'thinking')
   broadcastState()
 
   const prompt = buildCodexPrompt(agent, agent.history.slice(0, -1), text)
-  const child = spawn(copilotPath, ['-p', prompt, '--output-format', 'json', '--allow-all'], {
+  const args = ['-p', prompt, '--output-format', 'json', '--allow-all']
+  if (model) {
+    args.push('--model', model)
+  }
+
+  const child = spawn(copilotPath, args, {
     cwd: workspacePath,
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -464,22 +535,24 @@ async function runCopilotTurn(agent: RuntimeAgent, text: string, workspacePath: 
     setBubble(agent, completionText, 'completion', Date.now() + 3200)
     state.completionPulseId += 1
 
-    if (state.config.soundsEnabled) {
-      shell.beep()
-    }
-
     broadcastState()
   })
 }
 
-async function runGeminiTurn(agent: RuntimeAgent, text: string, workspacePath: string, geminiPath: string) {
+async function runGeminiTurn(agent: RuntimeAgent, text: string, workspacePath: string, geminiPath: string, model: string | null) {
   agent.isBusy = true
   pushMessage(agent, 'user', text)
   setBubble(agent, randomItem(thinkingPhrases), 'thinking')
   broadcastState()
 
   const prompt = buildCodexPrompt(agent, agent.history.slice(0, -1), text)
-  const child = spawn(geminiPath, ['--yolo', '-p', prompt], {
+  const args = ['--yolo']
+  if (model) {
+    args.push('--model', model)
+  }
+  args.push('-p', prompt)
+
+  const child = spawn(geminiPath, args, {
     cwd: workspacePath,
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -539,22 +612,24 @@ async function runGeminiTurn(agent: RuntimeAgent, text: string, workspacePath: s
     setBubble(agent, completionText, 'completion', Date.now() + 3200)
     state.completionPulseId += 1
 
-    if (state.config.soundsEnabled) {
-      shell.beep()
-    }
-
     broadcastState()
   })
 }
 
-async function runOpenCodeTurn(agent: RuntimeAgent, text: string, workspacePath: string, openCodePath: string) {
+async function runOpenCodeTurn(agent: RuntimeAgent, text: string, workspacePath: string, openCodePath: string, model: string | null) {
   agent.isBusy = true
   pushMessage(agent, 'user', text)
   setBubble(agent, randomItem(thinkingPhrases), 'thinking')
   broadcastState()
 
   const prompt = buildCodexPrompt(agent, agent.history.slice(0, -1), text)
-  const child = spawn(openCodePath, ['run', prompt, '--format', 'json'], {
+  const args = ['run']
+  if (model) {
+    args.push('--model', model)
+  }
+  args.push(prompt, '--format', 'json')
+
+  const child = spawn(openCodePath, args, {
     cwd: workspacePath,
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -607,10 +682,6 @@ async function runOpenCodeTurn(agent: RuntimeAgent, text: string, workspacePath:
     const completionText = randomItem(completionPhrases)
     setBubble(agent, completionText, 'completion', Date.now() + 3200)
     state.completionPulseId += 1
-
-    if (state.config.soundsEnabled) {
-      shell.beep()
-    }
 
     broadcastState()
   })
@@ -1086,6 +1157,12 @@ function startAnimationLoop() {
       const wasWalking = agent.isWalking
       const previousDirection = agent.direction
 
+      if (!agent.isVisible) {
+        agent.isWalking = false
+        syncAttachedWindows(agent)
+        continue
+      }
+
       if (agent.isBusy && now >= agent.bubblePhraseDeadline) {
         setBubble(agent, randomItem(thinkingPhrases), 'thinking')
         agent.bubblePhraseDeadline = now + 3200
@@ -1140,15 +1217,25 @@ function startAnimationLoop() {
 }
 
 function syncAttachedWindows(agent: RuntimeAgent) {
+  const size = agentDimensions(agent.size)
   const agentWindow = state.agentWindows.get(agent.id)
-  agentWindow?.setBounds({ x: Math.round(agent.x), y: Math.round(agent.y), ...agentSize })
+  if (agentWindow) {
+    agentWindow.setBounds({ x: Math.round(agent.x), y: Math.round(agent.y), ...size })
+    if (agent.isVisible) {
+      if (!agentWindow.isVisible()) {
+        agentWindow.showInactive()
+      }
+    } else if (agentWindow.isVisible()) {
+      agentWindow.hide()
+    }
+  }
 
   const bubbleWindow = state.bubbleWindows.get(agent.id)
   if (bubbleWindow) {
-    if (agent.bubble && !agent.isPopoverVisible) {
+    if (agent.isVisible && agent.bubble && !agent.isPopoverVisible) {
       const width = Math.max(90, agent.bubble.text.length * 8 + 28)
       bubbleWindow.setBounds({
-        x: Math.round(agent.x + agentSize.width / 2 - width / 2),
+        x: Math.round(agent.x + size.width / 2 - width / 2),
         y: Math.round(agent.y - 38),
         width,
         height: 34,
@@ -1164,17 +1251,21 @@ function syncAttachedWindows(agent: RuntimeAgent) {
   const popoverWindow = state.popoverWindows.get(agent.id)
   if (popoverWindow?.isVisible()) {
     popoverWindow.setBounds({
-      x: Math.round(agent.x + agentSize.width / 2 - popoverSize.width / 2),
+      x: Math.round(agent.x + size.width / 2 - popoverSize.width / 2),
       y: Math.round(agent.y - popoverSize.height + 12),
       ...popoverSize,
     })
+    if (!agent.isVisible) {
+      popoverWindow.hide()
+    }
   }
 }
 
 function createAgentWindows() {
   for (const agent of state.agents) {
+    const size = agentDimensions(agent.size)
     const agentWindow = new BrowserWindow({
-      ...agentSize,
+      ...size,
       x: Math.round(agent.x),
       y: Math.round(agent.y),
       frame: false,
@@ -1189,6 +1280,9 @@ function createAgentWindows() {
       webPreferences: windowWebPreferences(),
     })
     agentWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+    if (!agent.isVisible) {
+      agentWindow.hide()
+    }
     loadWindow(agentWindow, `agent/${agent.id}`)
     state.agentWindows.set(agent.id, agentWindow)
 
@@ -1277,13 +1371,37 @@ function createTray() {
   `)}`)
   state.tray = new Tray(icon)
   state.tray.setToolTip('lil agents')
+  updateTrayMenu()
+  state.tray.on('double-click', () => showSettingsWindow())
+}
+
+function updateTrayMenu() {
+  if (!state.tray) {
+    return
+  }
+
   const menu = Menu.buildFromTemplate([
     { label: 'Open settings', click: () => showSettingsWindow() },
     { type: 'separator' },
+    ...state.agents.map((agent) => ({
+      label: agent.name,
+      type: 'checkbox' as const,
+      checked: agent.isVisible,
+      click: () => {
+        updateConfig({
+          visibleAgents: {
+            [agent.name]: !agent.isVisible,
+          },
+        })
+      },
+    })),
+    { type: 'separator' },
+    { label: 'Check for updates', click: () => void checkForUpdates() },
+    { type: 'separator' },
     { label: 'Quit', click: () => app.quit() },
   ])
+
   state.tray.setContextMenu(menu)
-  state.tray.on('double-click', () => showSettingsWindow())
 }
 
 function showSettingsWindow() {
@@ -1326,31 +1444,56 @@ function closePopover(agentId: number) {
 }
 
 function loadWindow(window: BrowserWindow, route: string) {
+  const distIndexPath = path.join(app.getAppPath(), 'dist', 'index.html')
+  let didFallbackToDist = false
+
+  const loadDist = () => {
+    didFallbackToDist = true
+    void window.loadFile(distIndexPath, { hash: `/${route}` })
+  }
+
+  window.webContents.once('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    const isDevNavigation = isDev && validatedURL.startsWith(devServerUrl)
+    if (isDev && isDevNavigation && !didFallbackToDist) {
+      loadDist()
+      return
+    }
+
+    if (!isDev) {
+      dialog.showErrorBox(
+        'Renderer failed to load',
+        `Could not load route "${route}".\n\nURL: ${validatedURL}\nError: ${errorDescription} (${errorCode})\n\nExpected file: ${distIndexPath}`,
+      )
+    }
+  })
+
   if (isDev) {
-    void window.loadURL(`${devServerUrl}/#/${route}`)
+    void window.loadURL(`${devServerUrl}/#/${route}`).catch(() => {
+      if (!didFallbackToDist) {
+        loadDist()
+      }
+    })
     return
   }
 
-  const fileUrl = pathToFileURL(path.join(app.getAppPath(), 'dist', 'index.html')).toString()
-  void window.loadURL(`${fileUrl}#/${route}`)
+  loadDist()
 }
 
 function updateAllWindowPositions(forceShow = false) {
-  const primaryDisplay = screen.getPrimaryDisplay()
-  const workArea = primaryDisplay.workArea
+  const workArea = selectedDisplay().workArea
   const centerX = workArea.x + workArea.width / 2
-  const sharedY = workArea.y + workArea.height - agentSize.height + 26 - state.config.manualLift
 
   for (const [index, agent] of state.agents.entries()) {
+    const size = agentDimensions(agent.size)
     const offset = index === 0 ? -state.config.manualSpread / 2 : state.config.manualSpread / 2
     const savedAnchor = state.config.agentAnchors[agent.name]
     const trackCenter = savedAnchor ?? agent.anchorX ?? centerX + offset
     setAgentAnchor(agent, trackCenter)
     if (forceShow || !Number.isFinite(agent.x)) {
-      agent.x = agent.anchorX - agentSize.width / 2
+      agent.x = agent.anchorX - size.width / 2
     }
     agent.x = clamp(agent.x, agent.trackStart, agent.trackEnd)
-    agent.y = sharedY
+    agent.y = workArea.y + workArea.height - size.height + 26 - state.config.manualLift
     syncAttachedWindows(agent)
   }
 }
@@ -1370,16 +1513,23 @@ function buildSnapshot(): RendererSnapshot {
   return {
     config: state.config,
     availableThemes,
+    availableDisplays: screen.getAllDisplays().map((display, index) => ({
+      id: display.id,
+      label: display.label || `Display ${index + 1}`,
+    })),
     completionPulseId: state.completionPulseId,
     providers,
     activeProvider: {
-      name: state.config.provider,
-      label: providerDisplayName(state.config.provider),
+      name: state.agents[0]?.provider ?? state.config.provider,
+      label: providerDisplayName(state.agents[0]?.provider ?? state.config.provider),
     },
     agents: state.agents.map((agent): AgentSnapshot => ({
       id: agent.id,
       name: agent.name,
       variant: agent.variant,
+      provider: agent.provider,
+      size: agent.size,
+      isVisible: agent.isVisible,
       accent: agent.accent,
       isBusy: agent.isBusy,
       isWalking: agent.isWalking,
@@ -1406,11 +1556,15 @@ function createRuntimeAgent(
   variant: 'bruce' | 'jazz',
   accent: string,
   progressSeed: number,
+  config: AppConfig = state.config,
 ): RuntimeAgent {
   return {
     id,
     name,
     variant,
+    provider: configuredAgentProvider(name, config),
+    size: configuredAgentSize(name, config),
+    isVisible: configuredAgentVisibility(name, config),
     accent,
     x: progressSeed * 100,
     y: 0,
@@ -1513,8 +1667,22 @@ function updateConfig(patch: Partial<AppConfig>) {
     ...state.config,
     ...patch,
     agentAnchors: patch.agentAnchors ?? state.config.agentAnchors,
+    agentProviders: patch.agentProviders
+      ? { ...state.config.agentProviders, ...patch.agentProviders }
+      : state.config.agentProviders,
+    agentSizes: patch.agentSizes
+      ? { ...state.config.agentSizes, ...patch.agentSizes }
+      : state.config.agentSizes,
+    visibleAgents: patch.visibleAgents
+      ? { ...state.config.visibleAgents, ...patch.visibleAgents }
+      : state.config.visibleAgents,
+    providerModels: patch.providerModels
+      ? { ...state.config.providerModels, ...patch.providerModels }
+      : state.config.providerModels,
   }
+  syncAgentsFromConfig()
   writeConfig(state.config)
+  updateTrayMenu()
   updateAllWindowPositions()
   broadcastState()
 }
@@ -1544,8 +1712,14 @@ async function chooseWorkspacePath() {
 }
 
 function readConfig(): AppConfig {
+  const legacyProvider: ProviderName = 'codex'
   const defaults: AppConfig = {
-    provider: 'codex',
+    provider: legacyProvider,
+    providerModels: defaultProviderModels(),
+    agentProviders: defaultAgentProviders(legacyProvider),
+    agentSizes: defaultAgentSizes(),
+    visibleAgents: defaultAgentVisibility(),
+    pinnedDisplayId: null,
     workspacePath: null,
     theme: 'Peach',
     onboardingComplete: false,
@@ -1562,10 +1736,28 @@ function readConfig(): AppConfig {
 
   try {
     const parsed = JSON.parse(readFileSync(filePath, 'utf8')) as Partial<AppConfig>
+    const fallbackProvider = isProviderName(parsed.provider) ? parsed.provider : legacyProvider
     return {
       ...defaults,
       ...parsed,
-      provider: isProviderName(parsed.provider) ? parsed.provider : 'codex',
+      provider: fallbackProvider,
+      providerModels: {
+        ...defaults.providerModels,
+        ...(parsed.providerModels ?? {}),
+      },
+      agentProviders: {
+        ...defaultAgentProviders(fallbackProvider),
+        ...(parsed.agentProviders ?? {}),
+      },
+      agentSizes: {
+        ...defaults.agentSizes,
+        ...(parsed.agentSizes ?? {}),
+      },
+      visibleAgents: {
+        ...defaults.visibleAgents,
+        ...(parsed.visibleAgents ?? {}),
+      },
+      pinnedDisplayId: typeof parsed.pinnedDisplayId === 'number' ? parsed.pinnedDisplayId : null,
       agentAnchors: parsed.agentAnchors ?? defaults.agentAnchors,
     }
   } catch {
@@ -1654,6 +1846,151 @@ async function ensureProviderPath(provider: ProviderName) {
   return resolved
 }
 
+function configuredModel(provider: ProviderName) {
+  const value = state.config.providerModels[provider]?.trim()
+  return value ? value : null
+}
+
+function configuredAgentProvider(agentName: string, config: AppConfig = state.config) {
+  const provider = config.agentProviders[agentName]
+  return isProviderName(provider) ? provider : config.provider
+}
+
+function configuredAgentSize(agentName: string, config: AppConfig = state.config): AgentSize {
+  const size = config.agentSizes[agentName]
+  return size === 'small' || size === 'medium' || size === 'large' ? size : 'large'
+}
+
+function configuredAgentVisibility(agentName: string, config: AppConfig = state.config) {
+  return config.visibleAgents[agentName] !== false
+}
+
+function syncAgentsFromConfig() {
+  for (const agent of state.agents) {
+    agent.provider = configuredAgentProvider(agent.name)
+    agent.size = configuredAgentSize(agent.name)
+    agent.isVisible = configuredAgentVisibility(agent.name)
+
+    if (!agent.isVisible) {
+      agent.isDragging = false
+      agent.isWalking = false
+      agent.isPopoverVisible = false
+    }
+  }
+}
+
+function selectedDisplay() {
+  if (state.config.pinnedDisplayId != null) {
+    const pinned = screen.getAllDisplays().find((display) => display.id === state.config.pinnedDisplayId)
+    if (pinned) {
+      return pinned
+    }
+  }
+
+  return autoDisplay()
+}
+
+function autoDisplay() {
+  return screen.getAllDisplays().find(displayHasReservedTaskbarArea) ?? screen.getPrimaryDisplay()
+}
+
+function displayHasReservedTaskbarArea(display: Electron.Display) {
+  return (
+    display.bounds.x !== display.workArea.x
+    || display.bounds.y !== display.workArea.y
+    || display.bounds.width !== display.workArea.width
+    || display.bounds.height !== display.workArea.height
+  )
+}
+
+function attachScreenListeners() {
+  const refresh = () => {
+    updateAllWindowPositions(true)
+    broadcastState()
+  }
+
+  screen.on('display-added', refresh)
+  screen.on('display-removed', refresh)
+  screen.on('display-metrics-changed', refresh)
+}
+
+async function checkForUpdates() {
+  const owner = state.settingsWindow ?? BrowserWindow.getAllWindows()[0] ?? undefined
+
+  try {
+    const response = await fetch('https://api.github.com/repos/bhadraagada/lil-agents-win/releases/latest', {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'lil-agents-win',
+      },
+    })
+
+    if (!response.ok) {
+      throw new Error(`GitHub returned ${response.status}`)
+    }
+
+    const payload = await response.json() as { tag_name?: string; html_url?: string }
+    const latestVersion = normalizeVersion(payload.tag_name)
+    const currentVersion = normalizeVersion(app.getVersion())
+
+    if (latestVersion && isVersionNewer(latestVersion, currentVersion) && payload.html_url) {
+      const choice = await dialog.showMessageBox(owner, {
+        type: 'info',
+        buttons: ['Open release', 'Later'],
+        defaultId: 0,
+        cancelId: 1,
+        title: 'Update available',
+        message: `A newer version (${payload.tag_name}) is available.`,
+        detail: `You are running ${app.getVersion()}. Open the latest release page to download it.`,
+      })
+
+      if (choice.response === 0) {
+        await shell.openExternal(payload.html_url)
+      }
+      return
+    }
+
+    await dialog.showMessageBox(owner, {
+      type: 'info',
+      buttons: ['OK'],
+      title: 'Up to date',
+      message: 'You are running the latest available version.',
+      detail: `Current version: ${app.getVersion()}`,
+    })
+  } catch (error) {
+    await dialog.showMessageBox(owner, {
+      type: 'error',
+      buttons: ['OK'],
+      title: 'Update check failed',
+      message: 'Unable to check for updates right now.',
+      detail: error instanceof Error ? error.message : 'Unknown error',
+    })
+  }
+}
+
+function normalizeVersion(version: string | undefined) {
+  return version?.trim().replace(/^v/i, '') ?? ''
+}
+
+function isVersionNewer(candidate: string, current: string) {
+  const candidateParts = candidate.split('.').map((part) => Number.parseInt(part, 10) || 0)
+  const currentParts = current.split('.').map((part) => Number.parseInt(part, 10) || 0)
+  const length = Math.max(candidateParts.length, currentParts.length)
+
+  for (let index = 0; index < length; index += 1) {
+    const left = candidateParts[index] ?? 0
+    const right = currentParts[index] ?? 0
+    if (left > right) {
+      return true
+    }
+    if (left < right) {
+      return false
+    }
+  }
+
+  return false
+}
+
 function providerDisplayName(provider: ProviderName) {
   switch (provider) {
     case 'claude':
@@ -1682,7 +2019,8 @@ function clamp(value: number, min: number, max: number) {
 }
 
 function setAgentAnchor(agent: RuntimeAgent, centerX: number) {
+  const size = agentDimensions(agent.size)
   agent.anchorX = centerX
   agent.trackStart = centerX - 180
-  agent.trackEnd = centerX + 180 - agentSize.width
+  agent.trackEnd = centerX + 180 - size.width
 }

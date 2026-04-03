@@ -2,6 +2,8 @@ export type ThemeName = 'Peach' | 'Midnight' | 'Cloud' | 'Moss'
 
 export type ProviderName = 'claude' | 'codex' | 'copilot' | 'gemini' | 'opencode'
 
+export type AgentSize = 'large' | 'medium' | 'small'
+
 export type MessageRole = 'user' | 'assistant' | 'system' | 'error' | 'toolUse' | 'toolResult'
 
 export type WindowRoute =
@@ -25,6 +27,9 @@ export interface AgentSnapshot {
   id: number
   name: string
   variant: 'bruce' | 'jazz'
+  provider: ProviderName
+  size: AgentSize
+  isVisible: boolean
   accent: string
   isBusy: boolean
   isWalking: boolean
@@ -39,8 +44,23 @@ export interface AgentAnchorMap {
   [agentName: string]: number
 }
 
+export type ProviderModelMap = Record<ProviderName, string>
+export type AgentProviderMap = Record<string, ProviderName>
+export type AgentSizeMap = Record<string, AgentSize>
+export type AgentVisibilityMap = Record<string, boolean>
+
+export interface DisplayOption {
+  id: number
+  label: string
+}
+
 export interface AppConfig {
   provider: ProviderName
+  providerModels: ProviderModelMap
+  agentProviders: AgentProviderMap
+  agentSizes: AgentSizeMap
+  visibleAgents: AgentVisibilityMap
+  pinnedDisplayId: number | null
   workspacePath: string | null
   theme: ThemeName
   onboardingComplete: boolean
@@ -54,6 +74,7 @@ export interface RendererSnapshot {
   config: AppConfig
   agents: AgentSnapshot[]
   availableThemes: ThemeName[]
+  availableDisplays: DisplayOption[]
   providers: Record<ProviderName, {
     installed: boolean
     path: string | null
@@ -86,6 +107,7 @@ declare global {
       completeOnboarding: () => Promise<void>
       openSettings: () => Promise<void>
       chooseWorkspace: () => Promise<ChooseWorkspaceResult>
+      openExternal: (url: string) => Promise<void>
       updateConfig: (patch: Partial<AppConfig>) => Promise<void>
       revealAgents: () => Promise<void>
       startAgentDrag: (agentId: number, pointerOffsetX: number) => Promise<void>

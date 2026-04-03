@@ -10,10 +10,11 @@ This repo is the Electron + React + Vite Windows port.
 
 - animated `Bruce` and `Jazz` desktop agents
 - floating popover chat anchored to each agent
-- `Codex` CLI integration
+- provider support for `Claude Code`, `Codex`, `Copilot`, `Gemini`, and `OpenCode`
 - tray icon and settings window
 - workspace picker and persisted app settings
 - themes, onboarding, thinking bubbles, and completion sounds
+- per-provider global model settings with advanced fields
 - portable and NSIS packaging via `electron-builder`
 
 ## Status
@@ -25,22 +26,33 @@ Working today:
 - floating agent windows on the main display
 - per-agent chat windows and buddy persona prompts
 - Windows-friendly converted Bruce/Jazz animation assets
-- basic Codex turn execution and transcript rendering
+- per-agent provider selection, size controls, and visibility toggles
+- provider selection for Claude Code, Codex, Copilot, Gemini, and OpenCode
+- transcript rendering with user, assistant, tool-use, tool-result, and error messages
+- markdown rendering with inline code, code blocks, bullets, and links
 - manual lift/spread calibration for placement above the taskbar
+- display pinning and per-agent dragging
+- tray update checking and custom completion chimes
+- persisted per-provider model text fields that fall back to each CLI default when left blank
 
 Current limitations:
 
-- `Codex` is the only provider wired today
 - taskbar auto-hide and multi-monitor edge cases are not fully handled yet
 - signing and auto-update infrastructure are not configured yet
 - walking behavior is still being tuned against the converted Windows assets
+
+## Future Plans
+
+- better taskbar auto-hide and multi-monitor visibility behavior
+- full in-app auto-update flow instead of release-page handoff
+- more iteration on walking behavior against the converted Windows assets
 
 ## Requirements
 
 - Windows 11 x64
 - Node.js 22+
 - npm 10+
-- Codex CLI installed and available on `PATH`
+- at least one supported CLI installed and available on `PATH`
 
 ## Getting started
 
@@ -65,7 +77,7 @@ npm run dist:nsis
 
 ## Project structure
 
-- `electron/main.ts`: window management, tray, persistence, animation loop, Codex process handling
+- `electron/main.ts`: window management, tray, persistence, animation loop, and provider process handling
 - `electron/preload.ts`: safe renderer bridge
 - `src/App.tsx`: renderer UI for settings, agents, bubbles, and popovers
 - `src/lib/types.ts`: shared renderer/preload types

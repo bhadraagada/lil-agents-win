@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('lilAgents', {
   completeOnboarding: () => ipcRenderer.invoke('app:complete-onboarding') as Promise<void>,
   openSettings: () => ipcRenderer.invoke('app:open-settings') as Promise<void>,
   chooseWorkspace: () => ipcRenderer.invoke('app:choose-workspace') as Promise<ChooseWorkspaceResult>,
+  openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url) as Promise<void>,
   updateConfig: (patch: Partial<AppConfig>) => ipcRenderer.invoke('config:update', patch) as Promise<void>,
   revealAgents: () => ipcRenderer.invoke('app:reveal-agents') as Promise<void>,
   startAgentDrag: (agentId: number, pointerOffsetX: number) =>
