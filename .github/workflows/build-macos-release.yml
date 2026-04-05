@@ -1,0 +1,58 @@
+name: Build macOS Release Assets
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to upload macOS assets to
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos-release:
+    runs-on: macos-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event.inputs.tag }}
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event.inputs.tag }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify release exists
+        run: gh release view "$RELEASE_TAG"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build macOS assets
+        run: npm run dist:mac
+
+      - name: Show generated files
+        run: ls -la release
+
+      - name: Upload macOS assets to release
+        run: |
+          shopt -s nullglob
+          files=(release/*.dmg release/*.zip release/*mac*.yml release/*.blockmap)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No macOS release assets found in ./release"
+            exit 1
+          fi
+
+          gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
