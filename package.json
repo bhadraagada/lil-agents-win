@@ -23,7 +23,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "start": "bun run build && electron .",
-    "dist:mac": "npm run build && electron-builder --mac zip dmg",
+    "dist:mac": "npm run build && electron-builder --mac zip dmg --publish never",
     "dist:portable": "npm run build && electron-builder --win portable",
     "dist:nsis": "npm run build && electron-builder --win nsis"
   },
