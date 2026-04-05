@@ -1,7 +1,7 @@
 {
   "name": "lil-agents-win",
   "private": false,
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Windows port of lil agents: animated desktop buddies with floating CLI chat.",
   "license": "MIT",
   "type": "module",
@@ -27,6 +27,7 @@
     "dist:nsis": "npm run build && electron-builder --win nsis"
   },
   "dependencies": {
+    "electron-updater": "^6.7.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   },
@@ -61,6 +62,11 @@
     ],
     "directories": {
       "output": "release"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "bhadraagada",
+      "repo": "lil-agents-win"
     },
     "win": {
       "icon": "public/icons.ico",

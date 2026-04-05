@@ -347,6 +347,27 @@ function PopoverWindow({
 
   const lastAssistant = [...currentAgent.history].reverse().find((message) => message.role === 'assistant')
 
+  async function copyLastResponse() {
+    if (!lastAssistant?.text) {
+      pushNotice('info', 'Nothing to copy yet')
+      return
+    }
+
+    await navigator.clipboard.writeText(lastAssistant.text)
+    pushNotice('success', 'Copied')
+  }
+
+  async function chooseWorkspace() {
+    const result = await window.lilAgents.chooseWorkspace()
+    if (!result.path) {
+      pushNotice('info', 'Workspace unchanged')
+      return
+    }
+
+    const nextWorkspaceName = result.path.split(/[\\/]/).pop() ?? result.path
+    pushNotice('success', `Workspace set to ${nextWorkspaceName}`)
+  }
+
   async function submit() {
     const text = draft.trim()
     if (!text) {
@@ -379,19 +400,19 @@ function PopoverWindow({
     }
 
     if (cmd === '/copy') {
-      if (!lastAssistant?.text) {
-        pushNotice('info', 'Nothing to copy yet')
-        return
-      }
+      await copyLastResponse()
+      setDraft('')
+      return
+    }
 
-      await navigator.clipboard.writeText(lastAssistant.text)
-      pushNotice('success', 'Copied')
+    if (cmd === '/workspace') {
+      await chooseWorkspace()
       setDraft('')
       return
     }
 
     if (cmd === '/help') {
-      pushNotice('info', '/clear clears the chat, /copy copies the last reply, /help shows this note.')
+      pushNotice('info', '/clear clears the chat, /copy copies the last reply, /workspace changes folders, /help shows this note.')
       setDraft('')
       return
     }
@@ -443,6 +464,16 @@ function PopoverWindow({
           </div>
         </div>
         <div className="chat-header-actions">
+          <button
+            type="button"
+            className="chat-workspace-btn"
+            onClick={() => void chooseWorkspace()}
+            title={workspaceName ? `Change workspace (${workspaceName})` : 'Choose workspace'}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            </svg>
+          </button>
           <select
             className="chat-provider-select"
             value={currentAgent.provider}
@@ -455,6 +486,17 @@ function PopoverWindow({
               </option>
             ))}
           </select>
+          <button
+            type="button"
+            className="chat-settings-btn"
+            onClick={() => void copyLastResponse()}
+            title="Copy last reply"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3">
+              <rect x="9" y="9" width="11" height="11" />
+              <path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" />
+            </svg>
+          </button>
           <button
             type="button"
             className="chat-settings-btn"
@@ -485,7 +527,7 @@ function PopoverWindow({
       {/* Onboarding */}
       {!snapshot.config.onboardingComplete ? (
         <div className="chat-onboarding">
-          <p>Pick a workspace on first chat. Keep {providerLabel} installed. Click either agent anytime.</p>
+          <p>Pick a workspace on first chat. Use the folder button or `/workspace` anytime. Keep {providerLabel} installed.</p>
           <button type="button" onClick={() => void window.lilAgents.completeOnboarding()}>
             Got it
           </button>
@@ -524,15 +566,22 @@ function PopoverWindow({
         )}
       </div>
 
-      {/* Input */}
+        {/* Input */}
       <div className="chat-input-area">
         <div className="chat-commands">
-          {['/help', '/clear', '/copy'].map((cmd) => (
+          {['/help', '/clear', '/copy', '/workspace'].map((cmd) => (
             <button
               key={cmd}
               type="button"
               className={draft === cmd ? 'active' : ''}
-              onClick={() => setDraft(cmd)}
+              onClick={() => {
+                if (cmd === '/workspace') {
+                  void chooseWorkspace()
+                  return
+                }
+
+                setDraft(cmd)
+              }}
             >
               {cmd}
             </button>
@@ -677,7 +726,7 @@ function renderMarkdown(text: string) {
 
 function renderInlineMarkdown(text: string) {
   const nodes: ReactNode[] = []
-  const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^\)]+\)|https?:\/\/\S+)/g
+  const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]*\)|https?:\/\/\S+)/g
   let lastIndex = 0
   let match: RegExpExecArray | null
 
@@ -693,7 +742,7 @@ function renderInlineMarkdown(text: string) {
     } else if (token.startsWith('`') && token.endsWith('`')) {
       nodes.push(<code key={`${match.index}-code`} className="chat-inline-code">{token.slice(1, -1)}</code>)
     } else if (token.startsWith('[')) {
-      const parts = token.match(/^\[([^\]]+)\]\(([^\)]+)\)$/)
+      const parts = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/)
       if (parts) {
         nodes.push(
           <a

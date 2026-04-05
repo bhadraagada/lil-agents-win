@@ -1,4 +1,5 @@
 import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, screen, shell } from 'electron'
+import { autoUpdater } from 'electron-updater'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
@@ -10,7 +11,7 @@ const availableThemes: ThemeName[] = ['Peach', 'Midnight', 'Cloud', 'Moss']
 const availableProviders: ProviderName[] = ['claude', 'codex', 'copilot', 'gemini', 'opencode']
 const thinkingPhrases = ['thinking...', 'working on it', 'one sec...', 'checking files', 'running tools']
 const completionPhrases = ['done!', 'all set!', 'ready', 'check it out']
-const popoverSize = { width: 480, height: 500 }
+const popoverSize = { width: 520, height: 500 }
 const videoDurationMs = 10040
 const accelStartMs = 3000
 const fullSpeedStartMs = 3750
@@ -164,6 +165,10 @@ const state: AppState = {
 }
 
 let isQuitting = false
+let autoUpdaterConfigured = false
+let manualUpdateCheckInFlight = false
+let promptedUpdateVersion: string | null = null
+let updateDownloadInFlight = false
 
 function windowWebPreferences() {
   return {
@@ -201,6 +206,7 @@ app.whenReady().then(async () => {
   for (const [index, provider] of availableProviders.entries()) {
     state.providerPaths[provider] = resolvedPaths[index]
   }
+  setupAutoUpdater()
   syncAgentsFromConfig()
   createTray()
   createAgentWindows()
@@ -209,6 +215,12 @@ app.whenReady().then(async () => {
   startAnimationLoop()
   attachScreenListeners()
   broadcastState()
+
+  if (!isDev && app.isPackaged) {
+    setTimeout(() => {
+      void checkForUpdates(false)
+    }, 12000)
+  }
 })
 
 app.on('before-quit', () => {
@@ -1409,7 +1421,7 @@ function updateTrayMenu() {
       },
     })),
     { type: 'separator' },
-    { label: 'Check for updates', click: () => void checkForUpdates() },
+    { label: 'Check for updates', click: () => void checkForUpdates(true) },
     { type: 'separator' },
     { label: 'Quit', click: () => app.quit() },
   ])
@@ -1493,7 +1505,8 @@ function loadWindow(window: BrowserWindow, route: string) {
 }
 
 function updateAllWindowPositions(forceShow = false) {
-  const workArea = selectedDisplay().workArea
+  const display = selectedDisplay()
+  const workArea = display.workArea
   const centerX = workArea.x + workArea.width / 2
 
   for (const [index, agent] of state.agents.entries()) {
@@ -1506,7 +1519,7 @@ function updateAllWindowPositions(forceShow = false) {
       agent.x = agent.anchorX - size.width / 2
     }
     agent.x = clamp(agent.x, agent.trackStart, agent.trackEnd)
-    agent.y = workArea.y + workArea.height - size.height + 26 - state.config.manualLift
+    agent.y = resolveAgentY(display, size.height)
     syncAttachedWindows(agent)
   }
 }
@@ -1904,7 +1917,14 @@ function selectedDisplay() {
 }
 
 function autoDisplay() {
-  return screen.getAllDisplays().find(displayHasReservedTaskbarArea) ?? screen.getPrimaryDisplay()
+  const displays = screen.getAllDisplays()
+  const candidates = displays.filter(displayHasReservedTaskbarArea)
+  if (candidates.length === 0) {
+    return screen.getPrimaryDisplay()
+  }
+
+  const primaryDisplay = screen.getPrimaryDisplay()
+  return candidates.find((display) => display.id === primaryDisplay.id) ?? candidates[0]
 }
 
 function displayHasReservedTaskbarArea(display: Electron.Display) {
@@ -1927,51 +1947,148 @@ function attachScreenListeners() {
   screen.on('display-metrics-changed', refresh)
 }
 
-async function checkForUpdates() {
-  const owner = state.settingsWindow ?? BrowserWindow.getAllWindows()[0] ?? undefined
+function updateDialogOwner() {
+  return state.settingsWindow ?? BrowserWindow.getAllWindows()[0] ?? undefined
+}
 
-  try {
-    const response = await fetch('https://api.github.com/repos/bhadraagada/lil-agents-win/releases/latest', {
-      headers: {
-        Accept: 'application/vnd.github+json',
-        'User-Agent': 'lil-agents-win',
-      },
-    })
+function setupAutoUpdater() {
+  if (autoUpdaterConfigured || isDev || !app.isPackaged) {
+    return
+  }
 
-    if (!response.ok) {
-      throw new Error(`GitHub returned ${response.status}`)
-    }
+  autoUpdaterConfigured = true
+  autoUpdater.autoDownload = false
+  autoUpdater.autoInstallOnAppQuit = true
 
-    const payload = await response.json() as { tag_name?: string; html_url?: string }
-    const latestVersion = normalizeVersion(payload.tag_name)
-    const currentVersion = normalizeVersion(app.getVersion())
+  autoUpdater.on('update-available', async (info) => {
+    manualUpdateCheckInFlight = false
 
-    if (latestVersion && isVersionNewer(latestVersion, currentVersion) && payload.html_url) {
-      const choice = await dialog.showMessageBox(owner, {
-        type: 'info',
-        buttons: ['Open release', 'Later'],
-        defaultId: 0,
-        cancelId: 1,
-        title: 'Update available',
-        message: `A newer version (${payload.tag_name}) is available.`,
-        detail: `You are running ${app.getVersion()}. Open the latest release page to download it.`,
-      })
-
-      if (choice.response === 0) {
-        await shell.openExternal(payload.html_url)
-      }
+    if (promptedUpdateVersion === info.version || updateDownloadInFlight) {
       return
     }
 
-    await dialog.showMessageBox(owner, {
+    promptedUpdateVersion = info.version
+    const choice = await dialog.showMessageBox(updateDialogOwner(), {
+      type: 'info',
+      buttons: ['Download update', 'Later'],
+      defaultId: 0,
+      cancelId: 1,
+      title: 'Update available',
+      message: `Version ${info.version} is ready to download.`,
+      detail: `You are running ${app.getVersion()}. Download the update now and install it when it finishes?`,
+    })
+
+    if (choice.response !== 0) {
+      return
+    }
+
+    updateDownloadInFlight = true
+    try {
+      await autoUpdater.downloadUpdate()
+    } catch (error) {
+      updateDownloadInFlight = false
+      promptedUpdateVersion = null
+      await dialog.showMessageBox(updateDialogOwner(), {
+        type: 'error',
+        buttons: ['OK'],
+        title: 'Download failed',
+        message: 'The update could not be downloaded.',
+        detail: error instanceof Error ? error.message : 'Unknown error',
+      })
+    }
+  })
+
+  autoUpdater.on('update-not-available', async () => {
+    promptedUpdateVersion = null
+    if (!manualUpdateCheckInFlight) {
+      return
+    }
+
+    manualUpdateCheckInFlight = false
+    await dialog.showMessageBox(updateDialogOwner(), {
       type: 'info',
       buttons: ['OK'],
       title: 'Up to date',
       message: 'You are running the latest available version.',
       detail: `Current version: ${app.getVersion()}`,
     })
+  })
+
+  autoUpdater.on('update-downloaded', async (info) => {
+    manualUpdateCheckInFlight = false
+    updateDownloadInFlight = false
+    promptedUpdateVersion = info.version
+
+    const choice = await dialog.showMessageBox(updateDialogOwner(), {
+      type: 'info',
+      buttons: ['Install and restart', 'Later'],
+      defaultId: 0,
+      cancelId: 1,
+      title: 'Update ready',
+      message: `Version ${info.version} has been downloaded.`,
+      detail: 'Install the update now and restart lil agents?',
+    })
+
+    if (choice.response === 0) {
+      isQuitting = true
+      autoUpdater.quitAndInstall()
+    }
+  })
+
+  autoUpdater.on('error', async (error) => {
+    updateDownloadInFlight = false
+    promptedUpdateVersion = null
+
+    if (!manualUpdateCheckInFlight) {
+      console.error('Auto-update error:', error)
+      return
+    }
+
+    manualUpdateCheckInFlight = false
+    await dialog.showMessageBox(updateDialogOwner(), {
+      type: 'error',
+      buttons: ['OK'],
+      title: 'Update check failed',
+      message: 'Unable to check for updates right now.',
+      detail: error instanceof Error ? error.message : 'Unknown error',
+    })
+  })
+}
+
+async function checkForUpdates(manual: boolean) {
+  if (isDev || !app.isPackaged) {
+    if (!manual) {
+      return
+    }
+
+    await dialog.showMessageBox(updateDialogOwner(), {
+      type: 'info',
+      buttons: ['OK'],
+      title: 'Updates unavailable in development',
+      message: 'Auto-updates only run in packaged builds.',
+      detail: 'Build an installer or portable release to test the updater flow.',
+    })
+    return
+  }
+
+  if (manual && manualUpdateCheckInFlight) {
+    await dialog.showMessageBox(updateDialogOwner(), {
+      type: 'info',
+      buttons: ['OK'],
+      title: 'Already checking',
+      message: 'An update check is already in progress.',
+    })
+    return
+  }
+
+  setupAutoUpdater()
+  manualUpdateCheckInFlight = manual
+
+  try {
+    await autoUpdater.checkForUpdates()
   } catch (error) {
-    await dialog.showMessageBox(owner, {
+    manualUpdateCheckInFlight = false
+    await dialog.showMessageBox(updateDialogOwner(), {
       type: 'error',
       buttons: ['OK'],
       title: 'Update check failed',
@@ -1981,27 +2098,14 @@ async function checkForUpdates() {
   }
 }
 
-function normalizeVersion(version: string | undefined) {
-  return version?.trim().replace(/^v/i, '') ?? ''
-}
+function resolveAgentY(display: Electron.Display, agentHeight: number) {
+  const { bounds, workArea } = display
 
-function isVersionNewer(candidate: string, current: string) {
-  const candidateParts = candidate.split('.').map((part) => Number.parseInt(part, 10) || 0)
-  const currentParts = current.split('.').map((part) => Number.parseInt(part, 10) || 0)
-  const length = Math.max(candidateParts.length, currentParts.length)
-
-  for (let index = 0; index < length; index += 1) {
-    const left = candidateParts[index] ?? 0
-    const right = currentParts[index] ?? 0
-    if (left > right) {
-      return true
-    }
-    if (left < right) {
-      return false
-    }
+  if (workArea.y > bounds.y) {
+    return workArea.y + 6 - state.config.manualLift
   }
 
-  return false
+  return workArea.y + workArea.height - agentHeight + 26 - state.config.manualLift
 }
 
 function providerDisplayName(provider: ProviderName) {
