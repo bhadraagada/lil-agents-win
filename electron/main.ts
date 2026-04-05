@@ -1,9 +1,11 @@
-import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, screen, shell } from 'electron'
+import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, screen, shell } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type { AgentSize, AppConfig, AgentSnapshot, ProviderName, RendererSnapshot, TranscriptMessage, ThemeName } from '../src/lib/types'
+import { appIcon, defaultAgentCenterX, resolveAgentY, runtimeIconPath, selectDisplay, shouldHideDockIcon, trayIconSize } from './platform'
+import { findBinary, resolveProcessEnvironment } from './shellEnvironment'
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL || ''
 const isDev = Boolean(devServerUrl)
@@ -17,37 +19,6 @@ const accelStartMs = 3000
 const fullSpeedStartMs = 3750
 const decelStartMs = 7500
 const walkStopMs = 8250
-
-function runtimeIconPath() {
-  return path.join(app.getAppPath(), 'public', 'icons.ico')
-}
-
-function appIcon() {
-  const iconPath = runtimeIconPath()
-  if (existsSync(iconPath)) {
-    return nativeImage.createFromPath(iconPath)
-  }
-
-  return nativeImage.createFromDataURL(`data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
-    <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-      <defs>
-        <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" style="stop-color:#2a2f3d"/>
-          <stop offset="100%" style="stop-color:#1a1d26"/>
-        </linearGradient>
-      </defs>
-      <rect width="64" height="64" rx="14" fill="url(#bg)"/>
-      <circle cx="22" cy="30" r="14" fill="#3ecf8e"/>
-      <circle cx="17" cy="27" r="3" fill="#1a1d26"/>
-      <circle cx="27" cy="27" r="3" fill="#1a1d26"/>
-      <ellipse cx="22" cy="35" rx="5" ry="3" fill="#1a1d26" opacity="0.6"/>
-      <circle cx="42" cy="38" r="14" fill="#ff8b3d"/>
-      <circle cx="37" cy="35" r="3" fill="#1a1d26"/>
-      <circle cx="47" cy="35" r="3" fill="#1a1d26"/>
-      <ellipse cx="42" cy="43" rx="5" ry="3" fill="#1a1d26" opacity="0.6"/>
-    </svg>
-  `)}`)
-}
 
 function defaultProviderModels(): Record<ProviderName, string> {
   return {
@@ -184,11 +155,14 @@ function configPath() {
 }
 
 if (isDev) {
-  app.setPath('userData', path.join(app.getPath('appData'), 'lil-agents-win-dev'))
-  app.setPath('sessionData', path.join(app.getPath('appData'), 'lil-agents-win-dev-session'))
+  const devPathName = process.platform === 'darwin' ? 'lil-agents-desktop-dev' : 'lil-agents-win-dev'
+  app.setPath('userData', path.join(app.getPath('appData'), devPathName))
+  app.setPath('sessionData', path.join(app.getPath('appData'), `${devPathName}-session`))
 }
 
-app.setAppUserModelId(isDev ? 'xyz.lilagents.win.dev' : 'xyz.lilagents.win')
+if (process.platform === 'win32') {
+  app.setAppUserModelId(isDev ? 'xyz.lilagents.win.dev' : 'xyz.lilagents.win')
+}
 
 if (!isDev) {
   const gotLock = app.requestSingleInstanceLock()
@@ -202,10 +176,16 @@ if (!isDev) {
 }
 
 app.whenReady().then(async () => {
+  await resolveProcessEnvironment()
   const resolvedPaths = await Promise.all(availableProviders.map((provider) => ensureProviderPath(provider)))
   for (const [index, provider] of availableProviders.entries()) {
     state.providerPaths[provider] = resolvedPaths[index]
   }
+
+  if (shouldHideDockIcon() && app.dock) {
+    app.dock.hide()
+  }
+
   setupAutoUpdater()
   syncAgentsFromConfig()
   createTray()
@@ -269,22 +249,24 @@ ipcMain.handle('chat:send', async (_event, payload: { agentId: number; text: str
     return { ok: false, error: errorMessage }
   }
 
+  const runtimeEnvironment = await resolveProcessEnvironment()
+
   switch (provider) {
     case 'claude':
-      await runClaudeTurn(agent, payload.text, workspacePath, providerPath, configuredModel(provider))
+      await runClaudeTurn(agent, payload.text, workspacePath, providerPath, configuredModel(provider), runtimeEnvironment)
       break
     case 'copilot':
-      await runCopilotTurn(agent, payload.text, workspacePath, providerPath, configuredModel(provider))
+      await runCopilotTurn(agent, payload.text, workspacePath, providerPath, configuredModel(provider), runtimeEnvironment)
       break
     case 'gemini':
-      await runGeminiTurn(agent, payload.text, workspacePath, providerPath, configuredModel(provider))
+      await runGeminiTurn(agent, payload.text, workspacePath, providerPath, configuredModel(provider), runtimeEnvironment)
       break
     case 'opencode':
-      await runOpenCodeTurn(agent, payload.text, workspacePath, providerPath, configuredModel(provider))
+      await runOpenCodeTurn(agent, payload.text, workspacePath, providerPath, configuredModel(provider), runtimeEnvironment)
       break
     case 'codex':
     default:
-      await runCodexTurn(agent, payload.text, workspacePath, providerPath, configuredModel(provider))
+      await runCodexTurn(agent, payload.text, workspacePath, providerPath, configuredModel(provider), runtimeEnvironment)
       break
   }
 
@@ -376,7 +358,7 @@ ipcMain.handle('agent:drag-end', (_event, agentId: number) => {
   })
 })
 
-async function runCodexTurn(agent: RuntimeAgent, text: string, workspacePath: string, codexPath: string, model: string | null) {
+async function runCodexTurn(agent: RuntimeAgent, text: string, workspacePath: string, codexPath: string, model: string | null, runtimeEnvironment: NodeJS.ProcessEnv) {
   agent.isBusy = true
   pushMessage(agent, 'user', text)
   setBubble(agent, randomItem(thinkingPhrases), 'thinking')
@@ -391,7 +373,7 @@ async function runCodexTurn(agent: RuntimeAgent, text: string, workspacePath: st
 
   const child = spawn(codexPath, args, {
     cwd: workspacePath,
-    env: process.env,
+    env: runtimeEnvironment,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
 
@@ -435,7 +417,7 @@ async function runCodexTurn(agent: RuntimeAgent, text: string, workspacePath: st
   })
 }
 
-async function runClaudeTurn(agent: RuntimeAgent, text: string, workspacePath: string, claudePath: string, model: string | null) {
+async function runClaudeTurn(agent: RuntimeAgent, text: string, workspacePath: string, claudePath: string, model: string | null, runtimeEnvironment: NodeJS.ProcessEnv) {
   agent.isBusy = true
   pushMessage(agent, 'user', text)
   setBubble(agent, randomItem(thinkingPhrases), 'thinking')
@@ -449,7 +431,7 @@ async function runClaudeTurn(agent: RuntimeAgent, text: string, workspacePath: s
 
   const child = spawn(claudePath, args, {
     cwd: workspacePath,
-    env: process.env,
+    env: runtimeEnvironment,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
 
@@ -501,7 +483,7 @@ async function runClaudeTurn(agent: RuntimeAgent, text: string, workspacePath: s
   })
 }
 
-async function runCopilotTurn(agent: RuntimeAgent, text: string, workspacePath: string, copilotPath: string, model: string | null) {
+async function runCopilotTurn(agent: RuntimeAgent, text: string, workspacePath: string, copilotPath: string, model: string | null, runtimeEnvironment: NodeJS.ProcessEnv) {
   agent.isBusy = true
   pushMessage(agent, 'user', text)
   setBubble(agent, randomItem(thinkingPhrases), 'thinking')
@@ -515,7 +497,7 @@ async function runCopilotTurn(agent: RuntimeAgent, text: string, workspacePath: 
 
   const child = spawn(copilotPath, args, {
     cwd: workspacePath,
-    env: process.env,
+    env: runtimeEnvironment,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
 
@@ -582,7 +564,7 @@ async function runCopilotTurn(agent: RuntimeAgent, text: string, workspacePath: 
   })
 }
 
-async function runGeminiTurn(agent: RuntimeAgent, text: string, workspacePath: string, geminiPath: string, model: string | null) {
+async function runGeminiTurn(agent: RuntimeAgent, text: string, workspacePath: string, geminiPath: string, model: string | null, runtimeEnvironment: NodeJS.ProcessEnv) {
   agent.isBusy = true
   pushMessage(agent, 'user', text)
   setBubble(agent, randomItem(thinkingPhrases), 'thinking')
@@ -597,7 +579,7 @@ async function runGeminiTurn(agent: RuntimeAgent, text: string, workspacePath: s
 
   const child = spawn(geminiPath, args, {
     cwd: workspacePath,
-    env: process.env,
+    env: runtimeEnvironment,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
 
@@ -659,7 +641,7 @@ async function runGeminiTurn(agent: RuntimeAgent, text: string, workspacePath: s
   })
 }
 
-async function runOpenCodeTurn(agent: RuntimeAgent, text: string, workspacePath: string, openCodePath: string, model: string | null) {
+async function runOpenCodeTurn(agent: RuntimeAgent, text: string, workspacePath: string, openCodePath: string, model: string | null, runtimeEnvironment: NodeJS.ProcessEnv) {
   agent.isBusy = true
   pushMessage(agent, 'user', text)
   setBubble(agent, randomItem(thinkingPhrases), 'thinking')
@@ -674,7 +656,7 @@ async function runOpenCodeTurn(agent: RuntimeAgent, text: string, workspacePath:
 
   const child = spawn(openCodePath, args, {
     cwd: workspacePath,
-    env: process.env,
+    env: runtimeEnvironment,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
 
@@ -1305,13 +1287,15 @@ function syncAttachedWindows(agent: RuntimeAgent) {
 }
 
 function createAgentWindows() {
+  const windowIconPath = runtimeIconPath(app.getAppPath()) ?? undefined
+
   for (const agent of state.agents) {
     const size = agentDimensions(agent.size)
     const agentWindow = new BrowserWindow({
       ...size,
       x: Math.round(agent.x),
       y: Math.round(agent.y),
-      icon: runtimeIconPath(),
+      icon: windowIconPath,
       frame: false,
       transparent: true,
       resizable: false,
@@ -1333,7 +1317,7 @@ function createAgentWindows() {
     const popoverWindow = new BrowserWindow({
       ...popoverSize,
       show: false,
-      icon: runtimeIconPath(),
+      icon: windowIconPath,
       frame: false,
       transparent: true,
       resizable: false,
@@ -1351,7 +1335,7 @@ function createAgentWindows() {
       width: 120,
       height: 34,
       show: false,
-      icon: runtimeIconPath(),
+      icon: windowIconPath,
       frame: false,
       transparent: true,
       resizable: false,
@@ -1380,7 +1364,7 @@ function createSettingsWindow() {
     backgroundColor: '#111111',
     show: false,
     title: 'lil agents',
-    icon: runtimeIconPath(),
+    icon: runtimeIconPath(app.getAppPath()) ?? undefined,
     webPreferences: windowWebPreferences(),
   })
   loadWindow(state.settingsWindow, 'settings')
@@ -1393,7 +1377,8 @@ function createSettingsWindow() {
 }
 
 function createTray() {
-  const icon = appIcon().resize({ width: 16, height: 16 })
+  const size = trayIconSize()
+  const icon = appIcon(app.getAppPath()).resize({ width: size, height: size })
   state.tray = new Tray(icon)
   state.tray.setToolTip('lil agents')
   updateTrayMenu()
@@ -1506,8 +1491,7 @@ function loadWindow(window: BrowserWindow, route: string) {
 
 function updateAllWindowPositions(forceShow = false) {
   const display = selectedDisplay()
-  const workArea = display.workArea
-  const centerX = workArea.x + workArea.width / 2
+  const centerX = defaultAgentCenterX(display)
 
   for (const [index, agent] of state.agents.entries()) {
     const size = agentDimensions(agent.size)
@@ -1519,7 +1503,7 @@ function updateAllWindowPositions(forceShow = false) {
       agent.x = agent.anchorX - size.width / 2
     }
     agent.x = clamp(agent.x, agent.trackStart, agent.trackEnd)
-    agent.y = resolveAgentY(display, size.height)
+    agent.y = resolveAgentY(display, size.height, state.config.manualLift)
     syncAttachedWindows(agent)
   }
 }
@@ -1817,31 +1801,22 @@ async function findOpenCodePath() {
 }
 
 async function findProviderPath(binaryName: string) {
-  return new Promise<string | null>((resolve) => {
-    const child = spawn('where.exe', [binaryName])
-    let output = ''
+  return findBinary(binaryName, providerFallbackPaths(binaryName))
+}
 
-    child.stdout.on('data', (chunk) => {
-      output += chunk.toString()
-    })
+function providerFallbackPaths(binaryName: string) {
+  const home = app.getPath('home')
 
-    child.on('close', () => {
-      const candidates = output
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean)
+  if (process.platform !== 'darwin') {
+    return []
+  }
 
-      const preferred =
-        candidates.find((candidate) => candidate.toLowerCase().endsWith('.exe'))
-        ?? candidates.find((candidate) => candidate.toLowerCase().endsWith('.cmd'))
-        ?? candidates.find((candidate) => candidate.toLowerCase().endsWith('.bat'))
-        ?? candidates[0]
-
-      resolve(preferred ?? null)
-    })
-
-    child.on('error', () => resolve(null))
-  })
+  return [
+    path.join(home, '.local', 'bin', binaryName),
+    path.join(home, '.npm-global', 'bin', binaryName),
+    '/usr/local/bin/' + binaryName,
+    '/opt/homebrew/bin/' + binaryName,
+  ]
 }
 
 async function ensureProviderPath(provider: ProviderName) {
@@ -1906,34 +1881,7 @@ function syncAgentsFromConfig() {
 }
 
 function selectedDisplay() {
-  if (state.config.pinnedDisplayId != null) {
-    const pinned = screen.getAllDisplays().find((display) => display.id === state.config.pinnedDisplayId)
-    if (pinned) {
-      return pinned
-    }
-  }
-
-  return autoDisplay()
-}
-
-function autoDisplay() {
-  const displays = screen.getAllDisplays()
-  const candidates = displays.filter(displayHasReservedTaskbarArea)
-  if (candidates.length === 0) {
-    return screen.getPrimaryDisplay()
-  }
-
-  const primaryDisplay = screen.getPrimaryDisplay()
-  return candidates.find((display) => display.id === primaryDisplay.id) ?? candidates[0]
-}
-
-function displayHasReservedTaskbarArea(display: Electron.Display) {
-  return (
-    display.bounds.x !== display.workArea.x
-    || display.bounds.y !== display.workArea.y
-    || display.bounds.width !== display.workArea.width
-    || display.bounds.height !== display.workArea.height
-  )
+  return selectDisplay(screen.getAllDisplays(), screen.getPrimaryDisplay(), state.config.pinnedDisplayId)
 }
 
 function attachScreenListeners() {
@@ -2096,16 +2044,6 @@ async function checkForUpdates(manual: boolean) {
       detail: error instanceof Error ? error.message : 'Unknown error',
     })
   }
-}
-
-function resolveAgentY(display: Electron.Display, agentHeight: number) {
-  const { bounds, workArea } = display
-
-  if (workArea.y > bounds.y) {
-    return workArea.y + 6 - state.config.manualLift
-  }
-
-  return workArea.y + workArea.height - agentHeight + 26 - state.config.manualLift
 }
 
 function providerDisplayName(provider: ProviderName) {

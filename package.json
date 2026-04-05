@@ -56,7 +56,7 @@
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
-      "public/icons.ico",
+      "public/icons*",
       "package.json",
       "LICENSE"
     ],
@@ -73,6 +73,13 @@
       "target": [
         "portable",
         "nsis"
+      ]
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "zip",
+        "dmg"
       ]
     },
     "nsis": {
