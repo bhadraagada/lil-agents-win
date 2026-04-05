@@ -182,8 +182,9 @@ app.whenReady().then(async () => {
     state.providerPaths[provider] = resolvedPaths[index]
   }
 
-  if (shouldHideDockIcon() && app.dock) {
-    app.dock.hide()
+  if (shouldHideDockIcon()) {
+    app.setActivationPolicy('accessory')
+    app.dock?.hide()
   }
 
   setupAutoUpdater()
@@ -1416,6 +1417,9 @@ function updateTrayMenu() {
 
 function showSettingsWindow() {
   createSettingsWindow()
+  if (process.platform === 'darwin') {
+    app.focus({ steal: true })
+  }
   state.settingsWindow?.show()
   state.settingsWindow?.focus()
 }

@@ -1,7 +1,7 @@
 {
   "name": "lil-agents-win",
   "private": false,
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Windows port of lil agents: animated desktop buddies with floating CLI chat.",
   "license": "MIT",
   "type": "module",
@@ -23,6 +23,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "start": "bun run build && electron .",
+    "dist:mac": "npm run build && electron-builder --mac zip dmg",
     "dist:portable": "npm run build && electron-builder --win portable",
     "dist:nsis": "npm run build && electron-builder --win nsis"
   },
@@ -76,6 +77,7 @@
       ]
     },
     "mac": {
+      "icon": "public/icons.icns",
       "category": "public.app-category.developer-tools",
       "target": [
         "zip",
