@@ -1,11 +1,13 @@
 import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, screen, shell } from 'electron'
-import { autoUpdater } from 'electron-updater'
+import electronUpdater from 'electron-updater'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type { AgentSize, AppConfig, AgentSnapshot, ProviderName, RendererSnapshot, TranscriptMessage, ThemeName } from '../src/lib/types'
 import { appIcon, defaultAgentCenterX, resolveAgentY, runtimeIconPath, selectDisplay, shouldHideDockIcon, trayIconSize } from './platform'
 import { findBinary, resolveProcessEnvironment } from './shellEnvironment'
+
+const { autoUpdater } = electronUpdater
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL || ''
 const isDev = Boolean(devServerUrl)

@@ -1,7 +1,7 @@
 {
   "name": "lil-agents-win",
   "private": false,
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Windows port of lil agents: animated desktop buddies with floating CLI chat.",
   "license": "MIT",
   "type": "module",
